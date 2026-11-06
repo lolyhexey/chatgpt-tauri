@@ -238,8 +238,36 @@ function iconSymbol(name) {
 
 // Clean DIL markup BEFORE marked.js processes markdown
 function cleanDilMarkup(text) {
-  // Single regex that handles open, self-closing, and close tags
-  // Captures: [1]=optional /, [2]=tag name, [3]=attributes (may end with /)
+  // Strip GenUI/DIL template code that can't be rendered
+  text = text
+    // {@body const [x, setX] = DIL.useState(...)} — state declarations
+    .replace(/\{@body\s[^}]*\}/g, '')
+    // {#if ...} {/if} {#each ...} {/each} — control flow
+    .replace(/\{#if\s[^}]*\}/g, '')
+    .replace(/\{\/if\}/g, '')
+    .replace(/\{#each\s[^}]*\}/g, '')
+    .replace(/\{\/each\}/g, '')
+    .replace(/\{#else\}/g, '')
+    // {expression} standalone template expressions
+    .replace(/\{[^}]*DIL\.[^}]*\}/g, '')
+    .replace(/\{[^}]*GenUI\.[^}]*\}/g, '')
+    // GenUI.issueNewTurn(...) calls — strip entire onclick/action attributes
+    .replace(/GenUI\.issueNewTurn\([^)]*\)/g, '')
+    // <radio-group>, <radio>, <select>, <option> — interactive components → simple list
+    .replace(/<radio-group[^>]*>/gi, '<div class="dil-radio-group">')
+    .replace(/<\/radio-group>/gi, '</div>')
+    .replace(/<radio\s+([^>]*)>([\s\S]*?)<\/radio>/gi, function(_, attrs, content) {
+      var checked = /checked|selected|value="[^"]*"/.test(attrs) ? '◉' : '○';
+      return '<div class="dil-radio-item">' + checked + ' ' + content.trim() + '</div>';
+    })
+    .replace(/<radio[^>]*\/?\s*>/gi, '')
+    // <input>, <select> — form elements
+    .replace(/<input[^>]*>/gi, '')
+    .replace(/<select[^>]*>[\s\S]*?<\/select>/gi, '')
+    // Clean up excessive blank lines from stripping
+    .replace(/\n{3,}/g, '\n\n');
+
+  // Process DIL tags (box, row, text, icon, etc.)
   return text.replace(
     /<(\/?)(box|row|text|title|icon|divider|list|list-item|button|badge|header)\b([^>]*)>/gi,
     function(full, slash, tag, rawAttrs) {
