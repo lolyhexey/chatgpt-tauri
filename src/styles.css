@@ -466,4 +466,156 @@ body {
   text-align: center;
 }
 
+/* ===== ChatGPT DIL (Document Intermediate Language) Renderer =====
+   Styles reverse-engineered from ChatGPT web's DilRenderer components.
+   Matches: Box, Row, Text, Title, Icon, Code, Divider, List, Button, Badge */
+
+/* --- Box: flex container, column by default --- */
+.dil-box {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 16px 0 0;
+  white-space: pre-line;
+}
+
+.dil-has-border {
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 12px;
+  padding: 12px;
+}
+
+.dil-bg-surface {
+  background: rgb(0, 0, 0);
+  border-radius: 8px;
+  padding: 12px;
+}
+
+.dil-bg-surface-alt {
+  background: rgb(33, 33, 33);
+  border-radius: 8px;
+  padding: 12px;
+}
+
+.dil-border-success { border-color: rgb(4, 184, 76) !important; }
+.dil-border-error { border-color: var(--error) !important; }
+
+/* Padding variants (from padding={N}) */
+.dil-p-1 { padding: 4px; }
+.dil-p-2 { padding: 8px; }
+.dil-p-3 { padding: 12px; }
+.dil-p-4 { padding: 16px; }
+
+/* Gap variants (from gap={N}) */
+.dil-gap-1 { gap: 4px; }
+.dil-gap-2 { gap: 8px; }
+.dil-gap-3 { gap: 12px; }
+.dil-gap-4 { gap: 16px; }
+
+/* Radius variants */
+.dil-r-sm { border-radius: 6px; }
+.dil-r-md { border-radius: 8px; }
+.dil-r-lg { border-radius: 12px; }
+
+/* Alignment */
+.dil-align-center { align-items: center; }
+.dil-align-start { align-items: flex-start; }
+.dil-justify-center { justify-content: center; }
+
+/* --- Row: flex row --- */
+.dil-row {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+}
+
+/* --- Text --- */
+.dil-text { }
+.dil-color-secondary { color: rgb(175, 175, 175); }
+.dil-color-success { color: rgb(4, 184, 76); }
+.dil-color-error { color: var(--error); }
+
+.dil-size-xs { font-size: 12px; line-height: 18px; }
+.dil-size-sm { font-size: 13px; line-height: 20px; }
+.dil-size-md { font-size: 16px; line-height: 26px; }
+.dil-size-lg { font-size: 18px; line-height: 28px; }
+
+.dil-weight-semibold { font-weight: 600; }
+
+/* --- Title: h2/h3 headers --- */
+.dil-title {
+  font-weight: 600;
+  margin: 24px 0 0;
+}
+.dil-title-lg { font-size: 18px; line-height: 28px; }
+.dil-title-md { font-size: 16px; line-height: 26px; }
+.dil-title-sm { font-size: 14px; line-height: 22px; }
+
+/* --- Icon: inline symbol, 18x18 --- */
+.dil-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  font-size: 14px;
+  color: rgb(175, 175, 175);
+  line-height: 1;
+}
+.dil-icon-success, .dil-icon-green { color: rgb(4, 184, 76); }
+.dil-icon-error, .dil-icon-red { color: var(--error); }
+.dil-icon-warning, .dil-icon-yellow { color: #f59e0b; }
+.dil-icon-primary, .dil-icon-blue { color: #3b82f6; }
+
+/* --- Divider --- */
+.dil-divider {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 12px 0;
+}
+
+/* --- List --- */
+.dil-list {
+  margin: 8px 0;
+  padding-left: 24px;
+}
+.dil-list-item {
+  margin: 4px 0;
+  line-height: 26px;
+}
+
+/* --- Button --- */
+.dil-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 12px;
+  font-size: 14px;
+  color: var(--text-primary);
+  cursor: pointer;
+}
+.dil-button:hover { background: var(--bg-hover); }
+
+/* --- Badge --- */
+.dil-badge {
+  display: inline-block;
+  background: var(--bg-hover);
+  border-radius: 6px;
+  padding: 2px 8px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+/* --- Nested boxes: remove extra margin when box is inside box --- */
+.dil-box .dil-box,
+.dil-box .dil-row,
+.dil-has-border .dil-box {
+  margin: 0;
+}
+
 .hidden { display: none !important; }
