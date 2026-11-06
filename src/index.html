@@ -70,21 +70,40 @@
           <div class="composer-inner">
             <div class="disclaimer">ChatGPT can make mistakes. Check important info.</div>
             <div class="composer">
-              <button type="button" class="icon-btn composer-plus" id="goal-btn" title="Goal mode"><span data-icon="plus" data-size="20"></span></button>
-              <span class="goal-chip" id="goal-chip" hidden>
-                <span data-icon="target" data-size="14"></span>Goal
-                <button type="button" class="goal-chip-x" id="goal-chip-close" title="Exit goal mode"><span data-icon="x" data-size="12"></span></button>
-              </span>
-              <textarea id="chat-input" rows="1" placeholder="Ask ChatGPT" spellcheck="false"></textarea>
-              <button type="button" class="send-btn" id="send-btn" title="Send"><span data-icon="arrow-up" data-size="18"></span></button>
+              <div class="att-tray" id="att-tray" hidden></div>
+              <div class="composer-row">
+                <div class="plus-wrap">
+                  <button type="button" class="icon-btn composer-plus" id="plus-btn" title="Add files and more"><span data-icon="plus" data-size="20"></span></button>
+                  <div class="plus-menu" id="plus-menu" hidden>
+                    <button type="button" class="menu-item" id="attach-btn"><span data-icon="paperclip"></span>Add photos &amp; files</button>
+                    <button type="button" class="menu-item" id="goal-menu-btn"><span data-icon="target"></span>Goal mode</button>
+                  </div>
+                </div>
+                <span class="goal-chip" id="goal-chip" hidden>
+                  <span data-icon="target" data-size="14"></span>Goal
+                  <button type="button" class="goal-chip-x" id="goal-chip-close" title="Exit goal mode"><span data-icon="x" data-size="12"></span></button>
+                </span>
+                <textarea id="chat-input" rows="1" placeholder="Ask ChatGPT" spellcheck="false"></textarea>
+                <button type="button" class="send-btn" id="send-btn" title="Send"><span data-icon="arrow-up" data-size="18"></span></button>
+              </div>
             </div>
+            <input type="file" id="file-input" multiple hidden>
           </div>
         </div>
       </div>
     </main>
+
+    <div class="drop-overlay" id="drop-overlay" hidden>
+      <div class="drop-card">
+        <span data-icon="upload" data-size="32"></span>
+        <div class="drop-title">Add anything</div>
+        <div class="drop-sub">Drop any file here to add it to the conversation</div>
+      </div>
+    </div>
   </div>
 
   <script src="icons.js"></script>
+  <script src="attachments.js"></script>
   <script src="genui.js"></script>
   <script src="markdown.js"></script>
   <script src="tools-ui.js"></script>

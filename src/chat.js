@@ -16,15 +16,15 @@ class Chat {
     this.thread.innerHTML = '';
     this.pending = null;
     for (const msg of messages) {
-      if (msg.role === 'user') this._userTurn(msg.content);
+      if (msg.role === 'user') this._userTurn(msg.content, msg.attachments || []);
       else this._fillAssistant(this._newAssistantTurn(), msg.content, []);
     }
     this._updateEmpty();
     this._scrollToBottom();
   }
 
-  addUserMessage(text) {
-    this._userTurn(text);
+  addUserMessage(text, files) {
+    this._userTurn(text, files || []);
     this._updateEmpty();
     this._scrollToBottom();
   }
@@ -63,13 +63,47 @@ class Chat {
     return el;
   }
 
-  _userTurn(text) {
+  _userTurn(text, files) {
     const turn = document.createElement('div');
     turn.className = 'turn turn-user';
-    const bubble = document.createElement('div');
-    bubble.className = 'bubble';
-    bubble.textContent = text;
-    turn.appendChild(bubble);
+    if (files.length) {
+      const row = document.createElement('div');
+      row.className = 'msg-files';
+      for (const f of files) {
+        if (f.preview) {
+          const img = document.createElement('img');
+          img.src = f.preview;
+          img.alt = f.name;
+          img.title = f.name;
+          row.appendChild(img);
+          continue;
+        }
+        const card = document.createElement('div');
+        card.className = 'att att-file';
+        card.title = f.name;
+        const isImage = (f.mime_type || '').startsWith('image/');
+        card.innerHTML = '<div class="att-icon' + (isImage ? ' att-icon-image' : '') + '">' + icon(isImage ? 'image' : 'file', 20) + '</div>';
+        const meta = document.createElement('div');
+        meta.className = 'att-meta';
+        const nameEl = document.createElement('div');
+        nameEl.className = 'att-name';
+        nameEl.textContent = f.name;
+        const typeEl = document.createElement('div');
+        typeEl.className = 'att-type';
+        typeEl.textContent = fileExt(f.name);
+        meta.appendChild(nameEl);
+        meta.appendChild(typeEl);
+        card.appendChild(meta);
+        row.appendChild(card);
+      }
+      turn.appendChild(row);
+    }
+    if (text) {
+      const bubble = document.createElement('div');
+      bubble.className = 'bubble';
+      bubble.textContent = text;
+      turn.appendChild(bubble);
+    }
     this.thread.appendChild(turn);
   }
 

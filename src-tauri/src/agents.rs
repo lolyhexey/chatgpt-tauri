@@ -80,7 +80,7 @@ impl AgentRunner {
                     client.reasoning_effort = Some(effort);
                 }
 
-                let result = match client.send_message(&briefing).await {
+                let result = match client.send_message(&briefing, &[]).await {
                     Ok(events) => {
                         let text: String = events.iter().filter_map(|e| {
                             match e {

@@ -62,14 +62,20 @@ pub struct ChatResponse {
     pub full_text: String,
 }
 
-async fn chat_with_tools(client: &mut ChatGptClient, initial_text: &str, cwd: &str, is_first: bool) -> Result<ChatResponse, String> {
+async fn chat_with_tools(
+    client: &mut ChatGptClient,
+    initial_text: &str,
+    cwd: &str,
+    is_first: bool,
+    attachments: &[UploadedFile],
+) -> Result<ChatResponse, String> {
     let message = if is_first {
         format!("{}\n\n{}", tools::build_system_prompt(cwd), initial_text)
     } else {
         initial_text.to_string()
     };
 
-    let events = client.send_message(&message).await?;
+    let events = client.send_message(&message, attachments).await?;
     let full_text: String = events.iter().filter_map(|e| match e {
         StreamEvent::Text { delta } => Some(delta.as_str()),
         _ => None,
@@ -92,7 +98,7 @@ async fn chat_with_tools(client: &mut ChatGptClient, initial_text: &str, cwd: &s
                 all_tool_calls.push(tool_call.clone());
                 all_tool_results.push(result.clone());
                 let msg = format!("Tool \"spawn_agents\" returned:\n```\nERROR: {}\n```\nFix the arguments.", result.error.as_deref().unwrap_or(""));
-                let events = client.send_message(&msg).await?;
+                let events = client.send_message(&msg, &[]).await?;
                 response_text = events.iter().filter_map(|e| match e { StreamEvent::Text { delta } => Some(delta.as_str()), _ => None }).collect();
                 all_events.extend(events);
                 continue;
@@ -112,7 +118,7 @@ async fn chat_with_tools(client: &mut ChatGptClient, initial_text: &str, cwd: &s
             all_tool_results.push(tools::ToolResult { result: Some(format!("{ok}/{} agents completed", results.len())), error: None });
 
             let msg = format!("Tool \"spawn_agents\" returned ({ok}/{} succeeded):\n```\n{summary}\n```\nReview results. Use tools to verify. Fix issues.", results.len());
-            let events = client.send_message(&msg).await?;
+            let events = client.send_message(&msg, &[]).await?;
             response_text = events.iter().filter_map(|e| match e { StreamEvent::Text { delta } => Some(delta.as_str()), _ => None }).collect();
             all_events.extend(events);
         } else {
@@ -122,7 +128,7 @@ async fn chat_with_tools(client: &mut ChatGptClient, initial_text: &str, cwd: &s
 
             let output = if let Some(e) = &result.error { format!("ERROR: {e}") } else { result.result.clone().unwrap_or_default() };
             let msg = format!("Tool \"{}\" returned:\n```\n{output}\n```\nContinue with the user's request.", tool_call.name);
-            let events = client.send_message(&msg).await?;
+            let events = client.send_message(&msg, &[]).await?;
             response_text = events.iter().filter_map(|e| match e { StreamEvent::Text { delta } => Some(delta.as_str()), _ => None }).collect();
             all_events.extend(events);
         }
@@ -140,12 +146,13 @@ async fn chat_with_tools(client: &mut ChatGptClient, initial_text: &str, cwd: &s
 async fn send_message(
     text: String,
     is_first: bool,
+    attachments: Option<Vec<UploadedFile>>,
     state: tauri::State<'_, AppState>,
-    _app: tauri::AppHandle,
 ) -> Result<ChatResponse, String> {
     let mut client = make_client(&state)?;
     let cwd = state.cwd.clone();
-    let response = chat_with_tools(&mut client, &text, &cwd, is_first).await?;
+    let attachments = attachments.unwrap_or_default();
+    let response = chat_with_tools(&mut client, &text, &cwd, is_first, &attachments).await?;
 
     if let Some(conv_id) = &client.conversation_id {
         *state.conversation_id.lock().unwrap() = Some(conv_id.clone());
@@ -184,7 +191,7 @@ async fn start_goal(
             format!("Goal not yet complete. Continue working on: \"{task}\"\n\nKeep going. When done and verified, end with: [GOAL_COMPLETE]")
         };
 
-        let response = chat_with_tools(&mut client, &prompt, &cwd, false).await?;
+        let response = chat_with_tools(&mut client, &prompt, &cwd, false, &[]).await?;
         total_calls += 1 + response.tool_calls.len() as u32;
         let is_complete = response.full_text.contains("[GOAL_COMPLETE]");
         responses.push(response);
@@ -277,6 +284,51 @@ fn open_file_path(path: String) -> Result<(), String> {
     Ok(())
 }
 
+const MAX_UPLOAD_BYTES: u64 = 512 * 1024 * 1024;
+const MAX_PREVIEW_BYTES: usize = 6 * 1024 * 1024;
+
+async fn upload(state: &AppState, name: String, bytes: Vec<u8>) -> Result<UploadResult, String> {
+    if bytes.is_empty() {
+        return Err(format!("{name} is empty"));
+    }
+    let client = make_client(state)?;
+    let file = client.upload_file(&name, bytes.clone()).await?;
+    let preview = (file.is_image && bytes.len() <= MAX_PREVIEW_BYTES).then(|| {
+        use base64::Engine;
+        format!("data:{};base64,{}", file.mime_type, base64::engine::general_purpose::STANDARD.encode(&bytes))
+    });
+    Ok(UploadResult { file, preview })
+}
+
+/// Upload a file dropped onto the window (Tauri gives us its path).
+#[tauri::command]
+async fn upload_path(path: String, state: tauri::State<'_, AppState>) -> Result<UploadResult, String> {
+    let p = std::path::PathBuf::from(&path);
+    let meta = tokio::fs::metadata(&p).await.map_err(|e| format!("Cannot read {path}: {e}"))?;
+    if !meta.is_file() {
+        return Err("Folders can't be attached".into());
+    }
+    if meta.len() > MAX_UPLOAD_BYTES {
+        return Err("File is larger than 512 MB".into());
+    }
+    let name = p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "file".into());
+    let bytes = tokio::fs::read(&p).await.map_err(|e| format!("Cannot read {name}: {e}"))?;
+    upload(&state, name, bytes).await
+}
+
+/// Upload a pasted or picked file whose bytes come from the webview.
+#[tauri::command]
+async fn upload_bytes(name: String, data_base64: String, state: tauri::State<'_, AppState>) -> Result<UploadResult, String> {
+    use base64::Engine;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(data_base64.as_bytes())
+        .map_err(|_| "Invalid file data".to_string())?;
+    if bytes.len() as u64 > MAX_UPLOAD_BYTES {
+        return Err("File is larger than 512 MB".into());
+    }
+    upload(&state, name, bytes).await
+}
+
 #[tauri::command]
 fn copy_text(text: String) -> Result<(), String> {
     let mut clipboard = arboard::Clipboard::new().map_err(|e| e.to_string())?;
@@ -332,6 +384,8 @@ pub fn run() {
             open_file_path,
             copy_text,
             open_url,
+            upload_path,
+            upload_bytes,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

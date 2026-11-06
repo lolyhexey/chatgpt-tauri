@@ -5,6 +5,33 @@ pub struct Message {
     pub id: String,
     pub role: String,
     pub content: String,
+    #[serde(default)]
+    pub attachments: Vec<AttachmentInfo>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct AttachmentInfo {
+    pub name: String,
+    pub mime_type: String,
+}
+
+/// A file uploaded to ChatGPT, ready to be referenced from a message.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct UploadedFile {
+    pub id: String,
+    pub name: String,
+    pub mime_type: String,
+    pub size: u64,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    pub is_image: bool,
+}
+
+#[derive(Serialize, Clone, Debug)]
+pub struct UploadResult {
+    pub file: UploadedFile,
+    /// data: URL thumbnail source for small images; the UI never sends it back.
+    pub preview: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
