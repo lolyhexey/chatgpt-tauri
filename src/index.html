@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ChatGPT</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div id="app">
+    <div id="login-overlay" class="overlay hidden">
+      <div class="overlay-card">
+        <h2>Sign In</h2>
+        <p>Paste your ChatGPT access token:</p>
+        <textarea id="token-input" rows="4" placeholder="eyJ..."></textarea>
+        <button id="token-save-btn">Save Token</button>
+        <p class="hint">Get your token from chatgpt.com → DevTools → Application → Cookies → __Secure-next-auth.session-token</p>
+      </div>
+    </div>
+
+    <div id="sidebar" class="sidebar">
+      <div class="sidebar-header">
+        <button id="new-chat-btn" class="btn-new">+ New Chat</button>
+      </div>
+      <div id="chat-list" class="chat-list"></div>
+      <div class="sidebar-footer">
+        <button id="settings-btn" class="btn-icon">⚙</button>
+        <span id="status-text" class="status-text">Ready</span>
+      </div>
+    </div>
+
+    <div id="chat-area" class="chat-area">
+      <div id="messages" class="messages"></div>
+      <div class="input-area">
+        <textarea id="chat-input" rows="1" placeholder="Send a message..."></textarea>
+        <div class="input-buttons">
+          <button id="send-btn" class="btn-send">Send</button>
+          <button id="goal-btn" class="btn-goal">Goal</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js" type="module"></script>
+</body>
+</html>
