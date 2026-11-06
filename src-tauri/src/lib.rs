@@ -1,4 +1,6 @@
+mod api_helpers;
 mod auth;
+mod pow;
 mod types;
 
 use std::sync::Mutex;
