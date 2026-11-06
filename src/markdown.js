@@ -159,21 +159,22 @@ function iconSymbol(name) {
 
 // Clean DIL markup BEFORE marked.js processes markdown
 function cleanDilMarkup(text) {
-  const dilTags = 'box|row|text|title|icon|divider|list|list-item|button|badge|header';
-  return text
-    .replace(new RegExp(`<(${dilTags})(\\s[^>]*)?\\/\\s*>`, 'gi'), (_, tag, attrs) => {
-      return dilTagToHtml(tag.toLowerCase(), (attrs || '').trim());
-    })
-    .replace(new RegExp(`<(${dilTags})(\\s[^>]*)?>`, 'gi'), (_, tag, attrs) => {
-      return dilTagToHtml(tag.toLowerCase(), (attrs || '').trim());
-    })
-    .replace(new RegExp(`</(${dilTags})>`, 'gi'), (_, tag) => {
-      return dilCloseTag(tag.toLowerCase());
-    });
+  // Single regex that handles open, self-closing, and close tags
+  // Captures: [1]=optional /, [2]=tag name, [3]=attributes (may end with /)
+  return text.replace(
+    /<(\/?)(box|row|text|title|icon|divider|list|list-item|button|badge|header)\b([^>]*)>/gi,
+    function(full, slash, tag, rawAttrs) {
+      var t = tag.toLowerCase();
+      if (slash) return dilCloseTag(t);
+      // Remove trailing / from self-closing tags
+      var attrs = rawAttrs.replace(/\/\s*$/, '').trim();
+      return dilTagToHtml(t, attrs);
+    }
+  );
 }
 
-// Legacy function — kept for reference
-function cleanDilMarkup_old(text) {
+// Legacy function removed — see git history
+function _unused_cleanDilMarkup_old(text) {
   return text
     // --- BOX ---
     .replace(/<box\s+([^>]*)>/gi, (_, attrs) => {
