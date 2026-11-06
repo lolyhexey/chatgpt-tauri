@@ -2,6 +2,7 @@ mod api;
 mod api_helpers;
 mod auth;
 mod pow;
+mod tools;
 mod types;
 
 use api::ChatGptClient;
