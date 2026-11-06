@@ -11,7 +11,8 @@ function _initMarked() {
     var lang = opts.lang || '';
     var language = lang && hljs.getLanguage(lang) ? lang : 'plaintext';
     var highlighted = hljs.highlight(text, { language: language }).value;
-    return '<div class="code-block"><div class="code-header"><span class="code-lang">' + lang + '</span><button class="copy-btn" onclick="copyCode(this)">Copy</button></div><pre><code class="hljs language-' + language + '">' + highlighted + '</code></pre></div>';
+    var langDisplay = lang || 'code';
+    return '<div class="code-block"><div class="code-header"><span class="code-lang">&lt;/&gt; ' + langDisplay + '</span><button class="copy-btn" onclick="copyCode(this)">&#x1F4CB; Copy</button></div><pre><code class="hljs language-' + language + '">' + highlighted + '</code></pre></div>';
   };
 
   marked.setOptions({ renderer: renderer, gfm: true, breaks: true });
