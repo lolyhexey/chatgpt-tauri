@@ -12,7 +12,32 @@ function _initMarked() {
     var language = lang && hljs.getLanguage(lang) ? lang : 'plaintext';
     var highlighted = hljs.highlight(text, { language: language }).value;
     var langDisplay = lang || 'code';
-    return '<div class="code-block"><div class="code-header"><span class="code-lang">&lt;/&gt; ' + langDisplay + '</span><button class="copy-btn" onclick="copyCode(this)">&#x1F4CB; Copy</button></div><pre><code class="hljs language-' + language + '">' + highlighted + '</code></pre></div>';
+    return '<div class="code-block">' +
+      '<div class="code-header">' +
+        '<span class="code-lang">' + langDisplay + '</span>' +
+        '<button class="copy-btn" onclick="copyCode(this)">&#x1F4CB; Copy</button>' +
+      '</div>' +
+      '<div class="code-scroll"><pre><code class="hljs language-' + language + '">' + highlighted + '</code></pre></div>' +
+    '</div>';
+  };
+
+  renderer.table = function (token) {
+    var header = token.header || [];
+    var rows = token.rows || [];
+    var html = '<div class="table-wrapper"><table><thead><tr>';
+    for (var h of header) {
+      html += '<th>' + (h.tokens ? this.parser.parseInline(h.tokens) : h.text) + '</th>';
+    }
+    html += '</tr></thead><tbody>';
+    for (var row of rows) {
+      html += '<tr>';
+      for (var cell of row) {
+        html += '<td>' + (cell.tokens ? this.parser.parseInline(cell.tokens) : cell.text) + '</td>';
+      }
+      html += '</tr>';
+    }
+    html += '</tbody></table></div>';
+    return html;
   };
 
   marked.setOptions({ renderer: renderer, gfm: true, breaks: true });
@@ -24,10 +49,41 @@ function renderMarkdown(text) {
   if (!_markedReady) return escapeHtml(text);
   try {
     var cleaned = cleanDilMarkup(text);
-    return marked.parse(cleaned);
+    var html = marked.parse(cleaned);
+    html = makeFilePathsClickable(html);
+    return html;
   } catch (e) {
     return escapeHtml(text);
   }
+}
+
+function makeFilePathsClickable(html) {
+  // Match inline code that looks like file paths
+  // e.g. <code>E:\Project\file.js</code> or <code>src/main.rs:42</code>
+  return html.replace(/<code>([^<]+)<\/code>/g, function(full, content) {
+    // Check if it looks like a file path
+    if (isFilePath(content)) {
+      var cleanPath = content.replace(/:\d+(?::\d+)?$/, ''); // Remove :line:col
+      return '<code class="file-link" onclick="openFilePath(this)" data-path="' + escapeAttr(cleanPath) + '">' + content + '</code>';
+    }
+    return full;
+  });
+}
+
+function isFilePath(text) {
+  // Windows absolute: C:\, D:\, E:\
+  if (/^[A-Z]:\\/.test(text)) return true;
+  // Unix absolute: /home/, /usr/
+  if (/^\/[a-z]/.test(text)) return true;
+  // Relative with extension: src/file.js, ./config.yaml
+  if (/^\.?\.?\//.test(text) && /\.\w{1,10}(:\d+)?$/.test(text)) return true;
+  // Has directory separator + file extension
+  if (/[/\\]/.test(text) && /\.\w{1,10}(:\d+)?$/.test(text) && !/\s/.test(text) && !/:\/\//.test(text)) return true;
+  return false;
+}
+
+function escapeAttr(text) {
+  return text.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
 function escapeHtml(text) {
@@ -37,12 +93,27 @@ function escapeHtml(text) {
 }
 
 window.copyCode = function (btn) {
-  const pre = btn.closest('.code-block').querySelector('pre code');
-  const text = pre.textContent;
-  navigator.clipboard.writeText(text).then(() => {
-    btn.textContent = 'Copied!';
-    setTimeout(() => (btn.textContent = 'Copy'), 1500);
+  var pre = btn.closest('.code-block').querySelector('pre code');
+  var text = pre.textContent;
+  navigator.clipboard.writeText(text).then(function() {
+    btn.innerHTML = '&#x2705; Copied!';
+    btn.classList.add('copied');
+    setTimeout(function() {
+      btn.innerHTML = '&#x1F4CB; Copy';
+      btn.classList.remove('copied');
+    }, 1200);
   });
+};
+
+window.openFilePath = function (el) {
+  var path = el.getAttribute('data-path');
+  if (!path) return;
+  // Copy path to clipboard as fallback
+  navigator.clipboard.writeText(path);
+  // Try to open via Tauri shell
+  if (window.__TAURI__) {
+    window.__TAURI__.core.invoke('open_file_path', { path: path }).catch(function() {});
+  }
 };
 
 function dilTagToHtml(tag, attrStr) {

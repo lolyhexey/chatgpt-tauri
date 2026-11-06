@@ -253,6 +253,30 @@ fn set_conversation(id: String, parent_id: String, state: tauri::State<AppState>
     *state.parent_message_id.lock().unwrap() = parent_id;
 }
 
+#[tauri::command]
+fn open_file_path(path: String) -> Result<(), String> {
+    let p = std::path::Path::new(&path);
+    if !p.exists() {
+        return Err(format!("File not found: {path}"));
+    }
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("explorer")
+            .arg("/select,")
+            .arg(&path)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(p.parent().unwrap_or(p))
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let token = auth::load_token();
@@ -284,6 +308,7 @@ pub fn run() {
             new_conversation,
             set_conversation,
             start_goal,
+            open_file_path,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
