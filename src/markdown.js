@@ -22,7 +22,11 @@ marked.setOptions({
 export function renderMarkdown(text) {
   if (!text) return '';
   try {
+    // 1. Convert DIL tags to HTML BEFORE marked
+    //    Use <span> for inline elements (row, text, icon) so markdown inside them renders
+    //    Use \n\n<div>\n\n for block elements (box) — blank lines make marked treat them as HTML blocks
     let cleaned = cleanDilMarkup(text);
+    // 2. Run marked — processes markdown (bold, code, lists) + preserves our HTML
     return marked.parse(cleaned);
   } catch {
     return escapeHtml(text);
@@ -44,9 +48,132 @@ window.copyCode = function (btn) {
   });
 };
 
-// ChatGPT DIL (Document Intermediate Language) markup transformer
-// Maps custom tags to HTML with data attributes matching ChatGPT web's rendering
+function dilTagToHtml(tag, attrStr) {
+  const a = parseDilAttrs(attrStr);
+  switch (tag) {
+    case 'box': {
+      const c = ['dil-box'];
+      if (attrStr.includes('border') || a.border) c.push('dil-has-border');
+      if (a.background === 'surface') c.push('dil-bg-surface');
+      if (a.background === 'surface-secondary') c.push('dil-bg-surface-alt');
+      if (a.align) c.push(`dil-align-${a.align}`);
+      if (a.justify) c.push(`dil-justify-${a.justify}`);
+      if (a.padding) c.push(`dil-p-${a.padding}`);
+      if (a.gap) c.push(`dil-gap-${a.gap}`);
+      if (a.radius) c.push(`dil-r-${a.radius}`);
+      if (attrStr.includes('"success"')) c.push('dil-border-success');
+      if (attrStr.includes('"error"')) c.push('dil-border-error');
+      // Block element: use \n\n so marked treats content as markdown
+      return `\n\n<div class="${c.join(' ')}">\n\n`;
+    }
+    case 'row': {
+      // Inline element: use span so markdown inside renders
+      const c = ['dil-row'];
+      if (a.align) c.push(`dil-align-${a.align}`);
+      if (a.justify) c.push(`dil-justify-${a.justify}`);
+      if (a.gap) c.push(`dil-gap-${a.gap}`);
+      return `<span class="${c.join(' ')}">`;
+    }
+    case 'text': {
+      const c = ['dil-text'];
+      if (a.color) c.push(`dil-color-${a.color}`);
+      if (a.size) c.push(`dil-size-${a.size}`);
+      if (a.weight) c.push(`dil-weight-${a.weight}`);
+      return `<span class="${c.join(' ')}">`;
+    }
+    case 'title': {
+      const t = a.size === 'lg' ? 'h2' : 'h3';
+      return `\n\n<${t} class="dil-title dil-title-${a.size || 'md'}">`;
+    }
+    case 'icon': {
+      const name = a.name || '';
+      const color = a.color || '';
+      const symbol = iconSymbol(name);
+      const cls = color ? `dil-icon dil-icon-${color}` : 'dil-icon';
+      return `<span class="${cls}" title="${name}">${symbol}</span>`;
+    }
+    case 'divider':
+      return '\n\n<hr class="dil-divider">\n\n';
+    case 'list':
+      return '\n\n<ul class="dil-list">\n\n';
+    case 'list-item':
+      return '<li class="dil-list-item">';
+    case 'button':
+      return '<span class="dil-button">';
+    case 'badge':
+      return '<span class="dil-badge">';
+    case 'header':
+      return '\n\n<div class="dil-header">\n\n';
+    default:
+      return '';
+  }
+}
+
+function dilCloseTag(tag) {
+  switch (tag) {
+    case 'box': case 'header': return '\n\n</div>\n\n';
+    case 'row': return '</span>';
+    case 'text': case 'button': case 'badge': return '</span>';
+    case 'title': return '</h3>\n\n';
+    case 'list': return '\n\n</ul>\n\n';
+    case 'list-item': return '</li>';
+    case 'icon': return '';
+    default: return '';
+  }
+}
+
+function iconSymbol(name) {
+  const map = {
+    'arrow-down': '↓', 'arrow-right': '→', 'arrow-left': '←', 'arrow-up': '↑',
+    'check-circle': '✓', 'check': '✓',
+    'x-circle': '✗', 'x': '✗',
+    'info': 'ℹ', 'alert-circle': '⚠', 'alert-triangle': '⚠',
+    'workflow': '⚡', 'zap': '⚡',
+    'file-json': '📄', 'file': '📄', 'file-text': '📄', 'file-code': '📄',
+    'folder-code': '📁', 'folder': '📁',
+    'shield': '🛡', 'shield-check': '🛡',
+    'lock': '🔒', 'unlock': '🔓', 'key': '🔑',
+    'code': '⟨⟩', 'terminal': '▸', 'command': '⌘',
+    'database': '🗄', 'server': '🖥',
+    'globe': '🌐', 'link': '🔗', 'external-link': '↗',
+    'search': '🔍', 'copy': '📋', 'clipboard': '📋',
+    'download': '⬇', 'upload': '⬆',
+    'settings': '⚙', 'sliders': '⚙',
+    'eye': '👁', 'clock': '🕐', 'timer': '⏱',
+    'hash': '#', 'at-sign': '@',
+    'star': '★', 'heart': '♥',
+    'play': '▶', 'pause': '⏸', 'stop': '⏹',
+    'refresh-cw': '↻', 'rotate-cw': '↻',
+    'trash': '🗑', 'edit': '✏', 'pencil': '✏',
+    'plus': '+', 'minus': '−',
+    'chevron-right': '›', 'chevron-down': '⌄', 'chevron-up': '⌃',
+    'message-square': '💬', 'user': '👤', 'users': '👥',
+    'package': '📦', 'cpu': '🔲', 'hard-drive': '💾',
+    'wifi': '📶', 'image': '🖼', 'camera': '📷',
+    'book': '📖', 'layers': '◫', 'grid': '⊞',
+    'activity': '📊', 'bar-chart': '📊',
+    'git-branch': '⑂', 'git-commit': '●',
+  };
+  return map[name] || '•';
+}
+
+// Clean DIL markup BEFORE marked.js processes markdown
 function cleanDilMarkup(text) {
+  const dilTags = 'box|row|text|title|icon|divider|list|list-item|button|badge|header';
+  return text
+    .replace(new RegExp(`<(${dilTags})(\\s[^>]*)?\\/\\s*>`, 'gi'), (_, tag, attrs) => {
+      return dilTagToHtml(tag.toLowerCase(), (attrs || '').trim());
+    })
+    .replace(new RegExp(`<(${dilTags})(\\s[^>]*)?>`, 'gi'), (_, tag, attrs) => {
+      return dilTagToHtml(tag.toLowerCase(), (attrs || '').trim());
+    })
+    .replace(new RegExp(`</(${dilTags})>`, 'gi'), (_, tag) => {
+      return dilCloseTag(tag.toLowerCase());
+    });
+}
+
+// Legacy function — kept for reference
+function cleanDilMarkup_old(text) {
   return text
     // --- BOX ---
     .replace(/<box\s+([^>]*)>/gi, (_, attrs) => {
