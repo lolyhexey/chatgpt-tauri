@@ -5,45 +5,87 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>ChatGPT</title>
   <link rel="stylesheet" href="styles.css">
-  <link rel="stylesheet" href="vendor/github-dark.min.css">
   <script src="vendor/marked.min.js"></script>
   <script src="vendor/highlight.min.js"></script>
 </head>
 <body>
   <div id="app">
-    <div id="login-overlay" class="overlay hidden">
+    <div id="login-overlay" class="overlay" hidden>
       <div class="overlay-card">
-        <h2>Sign In</h2>
-        <p>Paste your ChatGPT access token:</p>
-        <textarea id="token-input" rows="4" placeholder="eyJ..."></textarea>
-        <button id="token-save-btn">Save Token</button>
-        <p class="hint">Get your token from chatgpt.com → DevTools → Application → Cookies → __Secure-next-auth.session-token</p>
+        <h2>Sign in</h2>
+        <p>Paste your ChatGPT access token to continue.</p>
+        <textarea id="token-input" rows="4" placeholder="eyJ…" spellcheck="false"></textarea>
+        <div id="login-error" class="login-error"></div>
+        <button id="token-save-btn" type="button">Continue</button>
+        <p class="hint">On chatgpt.com, open <code>/api/auth/session</code> and copy the <code>accessToken</code> value.</p>
       </div>
     </div>
 
-    <div id="sidebar" class="sidebar">
-      <div class="sidebar-header">
-        <button id="new-chat-btn" class="btn-new">+ New Chat</button>
-      </div>
-      <div id="chat-list" class="chat-list"></div>
-      <div class="sidebar-footer">
-        <button id="settings-btn" class="btn-icon">⚙</button>
-        <span id="status-text" class="status-text">Ready</span>
-      </div>
-    </div>
-
-    <div id="chat-area" class="chat-area">
-      <div id="messages" class="messages"></div>
-      <div class="input-area">
-        <textarea id="chat-input" rows="1" placeholder="Send a message..."></textarea>
-        <div class="input-buttons">
-          <button id="send-btn" class="btn-send">Send</button>
-          <button id="goal-btn" class="btn-goal">Goal</button>
+    <aside class="sidebar">
+      <div class="sb-top">
+        <div class="sb-brand">ChatGPT</div>
+        <div class="sb-top-icons">
+          <button type="button" class="icon-btn" id="search-btn" title="Search chats"><span data-icon="search" data-size="20"></span></button>
+          <button type="button" class="icon-btn" id="collapse-btn" title="Close sidebar"><span data-icon="panel-left" data-size="20"></span></button>
         </div>
       </div>
-    </div>
+
+      <nav class="sb-nav">
+        <button type="button" class="sb-item" id="new-chat-btn"><span data-icon="square-pen"></span><span>New chat</span></button>
+        <button type="button" class="sb-item" id="goal-nav-btn"><span data-icon="target"></span><span>Goal mode</span></button>
+      </nav>
+
+      <div class="sb-search" id="sb-search" hidden>
+        <input id="sb-search-input" type="text" placeholder="Search chats" spellcheck="false">
+      </div>
+
+      <div class="sb-section">Recents</div>
+      <div id="chat-list" class="chat-list"></div>
+
+      <div class="sb-footer">
+        <div class="avatar">CG</div>
+        <div class="sb-user">
+          <div class="sb-user-name">ChatGPT Desktop</div>
+          <div class="sb-user-status" id="status-text">Ready</div>
+        </div>
+        <button type="button" class="icon-btn" id="logout-btn" title="Sign out"><span data-icon="log-out"></span></button>
+      </div>
+    </aside>
+
+    <main class="main" id="main">
+      <header class="topbar">
+        <button type="button" class="icon-btn when-collapsed" id="open-sidebar-btn" title="Open sidebar"><span data-icon="panel-left" data-size="20"></span></button>
+        <button type="button" class="icon-btn when-collapsed" id="topbar-new-btn" title="New chat"><span data-icon="square-pen" data-size="20"></span></button>
+        <div class="topbar-title" id="chat-title">ChatGPT</div>
+      </header>
+
+      <div class="body">
+        <div id="messages" class="messages">
+          <div id="thread" class="thread"></div>
+        </div>
+
+        <h1 class="hero">What can I help with?</h1>
+
+        <div class="composer-wrap">
+          <div class="composer-inner">
+            <div class="disclaimer">ChatGPT can make mistakes. Check important info.</div>
+            <div class="composer">
+              <button type="button" class="icon-btn composer-plus" id="goal-btn" title="Goal mode"><span data-icon="plus" data-size="20"></span></button>
+              <span class="goal-chip" id="goal-chip" hidden>
+                <span data-icon="target" data-size="14"></span>Goal
+                <button type="button" class="goal-chip-x" id="goal-chip-close" title="Exit goal mode"><span data-icon="x" data-size="12"></span></button>
+              </span>
+              <textarea id="chat-input" rows="1" placeholder="Ask ChatGPT" spellcheck="false"></textarea>
+              <button type="button" class="send-btn" id="send-btn" title="Send"><span data-icon="arrow-up" data-size="18"></span></button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </main>
   </div>
 
+  <script src="icons.js"></script>
+  <script src="genui.js"></script>
   <script src="markdown.js"></script>
   <script src="tools-ui.js"></script>
   <script src="chat.js"></script>

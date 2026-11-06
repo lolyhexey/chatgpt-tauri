@@ -1,57 +1,38 @@
-function renderToolCall(name, args) {
-  const div = document.createElement('div');
-  div.className = 'tool-block';
+function renderToolBlock(call, result) {
+  var failed = !!(result && result.error);
+  var block = document.createElement('div');
+  block.className = 'tool-block' + (failed ? ' tool-failed' : '');
 
-  const header = document.createElement('div');
-  header.className = 'tool-header';
-  header.innerHTML = `<span class="tool-icon">🔧</span> <span class="tool-name">${escapeHtml(name)}</span>`;
+  var head = document.createElement('button');
+  head.type = 'button';
+  head.className = 'tool-head';
+  head.innerHTML = icon('wrench', 15) +
+    '<span class="tool-title">' + (failed ? 'Failed ' : 'Used ') + '<b>' + escText(call.name) + '</b></span>' +
+    icon('chevron-right', 15, 'tool-chev');
 
-  const argsEl = document.createElement('pre');
-  argsEl.className = 'tool-args';
-  argsEl.textContent = typeof args === 'string' ? args : JSON.stringify(args, null, 2);
+  var body = document.createElement('div');
+  body.className = 'tool-body';
+  body.hidden = true;
 
-  const content = document.createElement('div');
-  content.className = 'tool-content';
-  content.appendChild(argsEl);
+  var args = document.createElement('pre');
+  args.className = 'tool-pre';
+  args.textContent = typeof call.args === 'string' ? call.args : JSON.stringify(call.args, null, 2);
+  body.appendChild(args);
 
-  header.onclick = () => content.classList.toggle('collapsed');
-
-  div.appendChild(header);
-  div.appendChild(content);
-  return div;
-}
-
-function renderToolResult(result, error) {
-  const div = document.createElement('div');
-  div.className = 'tool-result' + (error ? ' tool-error' : '');
-
-  const text = error || result || '(no output)';
-  const pre = document.createElement('pre');
-  pre.textContent = text.length > 2000 ? text.slice(0, 2000) + '\n...(truncated)' : text;
-
-  div.appendChild(pre);
-  return div;
-}
-
-function renderAgentProgress(agents) {
-  const div = document.createElement('div');
-  div.className = 'agent-panel';
-  div.innerHTML = `<div class="agent-header">🤖 Parallel Agents (${agents.length})</div>`;
-
-  for (const agent of agents) {
-    const row = document.createElement('div');
-    row.className = 'agent-row';
-    const icon = agent.error ? '✗' : agent.result ? '✓' : '⟳';
-    const cls = agent.error ? 'agent-failed' : agent.result ? 'agent-done' : 'agent-running';
-    row.innerHTML = `<span class="${cls}">${icon}</span> ${escapeHtml(agent.task)} <span class="agent-time">${agent.seconds?.toFixed(1) || '...'}s</span>`;
-    div.appendChild(row);
+  if (result) {
+    var out = document.createElement('pre');
+    out.className = 'tool-pre tool-out' + (failed ? ' is-error' : '');
+    var text = result.error || result.result || '(no output)';
+    out.textContent = text.length > 4000 ? text.slice(0, 4000) + '\n…(truncated)' : text;
+    body.appendChild(out);
   }
 
-  return div;
-}
+  head.addEventListener('click', function () {
+    body.hidden = !body.hidden;
+    block.classList.toggle('open', !body.hidden);
+  });
 
-function escapeHtml(text) {
-  const el = document.createElement('span');
-  el.textContent = text;
-  return el.innerHTML;
+  block.appendChild(head);
+  block.appendChild(body);
+  return block;
 }

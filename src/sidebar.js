@@ -1,56 +1,84 @@
 class Sidebar {
-  get invoke() { return window.__TAURI__.core.invoke; }
-  constructor(container, { onSelect, onNew, onDelete }) {
+  constructor(container, { onSelect, onDelete }) {
     this.container = container;
     this.onSelect = onSelect;
-    this.onNew = onNew;
     this.onDelete = onDelete;
     this.activeId = null;
     this.items = [];
+    this.filter = '';
+    this.error = null;
   }
 
   async refresh() {
     try {
-      const data = await this.invoke('list_conversations_cmd', { offset: 0, limit: 50 });
-      this.items = data.items;
-      this.render();
+      const data = await window.__TAURI__.core.invoke('list_conversations_cmd', { offset: 0, limit: 50 });
+      this.items = data.items || [];
+      this.error = null;
     } catch (e) {
       console.error('Failed to load conversations:', e);
-      this.container.innerHTML = `<div class="chat-item" style="color:var(--text-dim)">Failed to load</div>`;
+      this.error = String(e);
     }
+    this.render();
   }
 
-  render() {
-    this.container.innerHTML = '';
-    for (const item of this.items) {
-      const el = document.createElement('div');
-      el.className = 'chat-item' + (item.id === this.activeId ? ' active' : '');
+  titleOf(id) {
+    const item = this.items.find((i) => i.id === id);
+    return item ? item.title : null;
+  }
 
-      const title = document.createElement('span');
-      title.className = 'title';
-      title.textContent = item.title;
-      el.appendChild(title);
-
-      const del = document.createElement('button');
-      del.className = 'delete-btn';
-      del.textContent = '×';
-      del.onclick = (e) => {
-        e.stopPropagation();
-        this.onDelete(item.id, item.title);
-      };
-      el.appendChild(del);
-
-      el.onclick = () => this.onSelect(item.id);
-      this.container.appendChild(el);
-    }
-
-    if (this.items.length === 0) {
-      this.container.innerHTML = `<div class="chat-item" style="color:var(--text-dim)">No conversations</div>`;
-    }
+  setFilter(q) {
+    this.filter = q.trim().toLowerCase();
+    this.render();
   }
 
   setActive(id) {
     this.activeId = id;
     this.render();
+  }
+
+  render() {
+    this.container.innerHTML = '';
+    if (this.error) {
+      this._note('Could not load chats');
+      return;
+    }
+    const items = this.filter
+      ? this.items.filter((i) => (i.title || '').toLowerCase().includes(this.filter))
+      : this.items;
+    if (items.length === 0) {
+      this._note(this.filter ? 'No matching chats' : 'No chats yet');
+      return;
+    }
+    for (const item of items) {
+      const row = document.createElement('div');
+      row.className = 'sb-chat' + (item.id === this.activeId ? ' active' : '');
+      row.title = item.title || 'Untitled';
+
+      const title = document.createElement('span');
+      title.className = 'sb-chat-title';
+      title.textContent = item.title || 'Untitled';
+      row.appendChild(title);
+
+      const del = document.createElement('button');
+      del.type = 'button';
+      del.className = 'sb-chat-del';
+      del.title = 'Delete chat';
+      del.innerHTML = icon('trash', 16);
+      del.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this.onDelete(item.id, item.title);
+      });
+      row.appendChild(del);
+
+      row.addEventListener('click', () => this.onSelect(item.id));
+      this.container.appendChild(row);
+    }
+  }
+
+  _note(text) {
+    const el = document.createElement('div');
+    el.className = 'sb-note';
+    el.textContent = text;
+    this.container.appendChild(el);
   }
 }

@@ -277,6 +277,27 @@ fn open_file_path(path: String) -> Result<(), String> {
     Ok(())
 }
 
+#[tauri::command]
+fn copy_text(text: String) -> Result<(), String> {
+    let mut clipboard = arboard::Clipboard::new().map_err(|e| e.to_string())?;
+    clipboard.set_text(text).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn open_url(url: String) -> Result<(), String> {
+    if !(url.starts_with("https://") || url.starts_with("http://")) {
+        return Err("Only http(s) links can be opened".into());
+    }
+    #[cfg(target_os = "windows")]
+    let mut cmd = std::process::Command::new("explorer");
+    #[cfg(target_os = "macos")]
+    let mut cmd = std::process::Command::new("open");
+    #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+    let mut cmd = std::process::Command::new("xdg-open");
+    cmd.arg(&url).spawn().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let token = auth::load_token();
@@ -309,6 +330,8 @@ pub fn run() {
             set_conversation,
             start_goal,
             open_file_path,
+            copy_text,
+            open_url,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

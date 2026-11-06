@@ -6,20 +6,21 @@ function _initMarked() {
   _markedReady = true;
 
   var renderer = new marked.Renderer();
+  // marked v12 calls code(code, lang, escaped) with positional args
   renderer.code = function (code, lang) {
-    // marked.js v12 sends (code, lang, escaped) as separate args
     var text = code || '';
-    var language = lang && hljs.getLanguage(lang) ? lang : 'plaintext';
-    var highlighted = hljs.highlight(text, { language: language }).value;
-    var langDisplay = lang || 'code';
+    var name = (lang || '').trim().split(/\s+/)[0];
+    var language = name && hljs.getLanguage(name) ? name : 'plaintext';
+    var highlighted = hljs.highlight(text, { language: language, ignoreIllegals: true }).value;
     return '<div class="code-block">' +
       '<div class="code-header">' +
-        '<span class="code-lang">' + langDisplay + '</span>' +
-        '<div class="code-actions">' +
-          '<button class="copy-btn" onclick="copyCode(this)" title="Copy code">&#x1F4CB;</button>' +
-        '</div>' +
+        '<span class="code-lang">' + icon('code-xml', 16) + '<span>' + escText(name || 'text') + '</span></span>' +
+        '<span class="code-actions">' +
+          '<button type="button" class="code-btn" data-action="wrap-code" title="Wrap lines">' + icon('wrap-text', 18) + '</button>' +
+          '<button type="button" class="code-btn" data-action="copy-code" title="Copy">' + icon('copy', 18) + '</button>' +
+        '</span>' +
       '</div>' +
-      '<div class="code-scroll"><pre><code class="hljs language-' + language + '">' + highlighted + '</code></pre></div>' +
+      '<pre class="code-pre"><code class="hljs language-' + language + '">' + highlighted + '</code></pre>' +
     '</div>';
   };
 
@@ -29,156 +30,79 @@ function _initMarked() {
 function renderMarkdown(text) {
   if (!text) return '';
   _initMarked();
-  if (!_markedReady) return escapeHtml(text);
+  if (!_markedReady) return escText(text);
   try {
-    var cleaned = cleanDilMarkup(text);
-    var html = marked.parse(cleaned);
-    html = makeFilePathsClickable(html);
-    return html;
+    var html = marked.parse(transformMarkup(text));
+    html = html.replace(/<table>/g, '<div class="table-wrap"><table>').replace(/<\/table>/g, '</table></div>');
+    return sanitizeHtml(linkifyFilePaths(html));
   } catch (e) {
-    return escapeHtml(text);
+    console.error('renderMarkdown failed', e);
+    return escText(text);
   }
 }
 
-function makeFilePathsClickable(html) {
-  // Match inline code that looks like file paths
-  // e.g. <code>E:\Project\file.js</code> or <code>src/main.rs:42</code>
-  return html.replace(/<code>([^<]+)<\/code>/g, function(full, content) {
-    // Check if it looks like a file path
-    if (isFilePath(content)) {
-      var cleanPath = content.replace(/:\d+(?::\d+)?$/, ''); // Remove :line:col
-      return '<code class="file-link" onclick="openFilePath(this)" data-path="' + escapeAttr(cleanPath) + '">' + content + '</code>';
+// Apply GenUI/DIL transforms only outside fenced code blocks.
+function transformMarkup(text) {
+  return text.split(/(```[\s\S]*?(?:```|$)|~~~[\s\S]*?(?:~~~|$))/).map(function (seg, i) {
+    if (i % 2 === 1) return seg;
+    seg = transformDil(transformGenUI(seg));
+    // Indented HTML lines would otherwise become markdown code blocks.
+    return seg.replace(/^[ \t]+(?=<)/gm, '');
+  }).join('');
+}
+
+function transformDil(text) {
+  return text.replace(
+    /<(\/?)(box|row|text|title|icon|divider|list|list-item|badge|header)\b([^>]*)>/gi,
+    function (full, slash, tag, rawAttrs) {
+      var t = tag.toLowerCase();
+      if (slash) return dilCloseTag(t);
+      return dilTagToHtml(t, rawAttrs.replace(/\/\s*$/, '').trim());
     }
-    return full;
-  });
+  );
 }
-
-function isFilePath(text) {
-  // Windows absolute: C:\, D:\, E:\
-  if (/^[A-Z]:\\/.test(text)) return true;
-  // Unix absolute: /home/, /usr/
-  if (/^\/[a-z]/.test(text)) return true;
-  // Relative with extension: src/file.js, ./config.yaml
-  if (/^\.?\.?\//.test(text) && /\.\w{1,10}(:\d+)?$/.test(text)) return true;
-  // Has directory separator + file extension
-  if (/[/\\]/.test(text) && /\.\w{1,10}(:\d+)?$/.test(text) && !/\s/.test(text) && !/:\/\//.test(text)) return true;
-  return false;
-}
-
-function escapeAttr(text) {
-  return text.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-}
-
-function escapeHtml(text) {
-  const div = document.createElement('div');
-  div.textContent = text;
-  return div.innerHTML;
-}
-
-window.copyCode = function (btn) {
-  var pre = btn.closest('.code-block').querySelector('pre code');
-  var text = pre.textContent;
-  copyToClipboard(text).then(function() {
-    btn.innerHTML = '&#x2705;';
-    btn.classList.add('copied');
-    setTimeout(function() {
-      btn.innerHTML = '&#x1F4CB;';
-      btn.classList.remove('copied');
-    }, 1200);
-  });
-};
-
-function copyToClipboard(text) {
-  // Try Tauri clipboard first
-  if (window.__TAURI__ && window.__TAURI__.clipboard) {
-    return window.__TAURI__.clipboard.writeText(text);
-  }
-  // Try navigator.clipboard
-  if (navigator.clipboard && navigator.clipboard.writeText) {
-    return navigator.clipboard.writeText(text).catch(function() {
-      return fallbackCopy(text);
-    });
-  }
-  // Fallback: textarea + execCommand
-  return fallbackCopy(text);
-}
-
-function fallbackCopy(text) {
-  return new Promise(function(resolve) {
-    var ta = document.createElement('textarea');
-    ta.value = text;
-    ta.style.cssText = 'position:fixed;left:-9999px;top:-9999px';
-    document.body.appendChild(ta);
-    ta.select();
-    document.execCommand('copy');
-    document.body.removeChild(ta);
-    resolve();
-  });
-}
-
-window.openFilePath = function (el) {
-  var path = el.getAttribute('data-path');
-  if (!path) return;
-  // Copy path to clipboard as fallback
-  navigator.clipboard.writeText(path);
-  // Try to open via Tauri shell
-  if (window.__TAURI__) {
-    window.__TAURI__.core.invoke('open_file_path', { path: path }).catch(function() {});
-  }
-};
 
 function dilTagToHtml(tag, attrStr) {
-  const a = parseDilAttrs(attrStr);
+  var a = parseDilAttrs(attrStr);
+  var c;
   switch (tag) {
-    case 'box': {
-      const c = ['dil-box'];
-      if (attrStr.includes('border') || a.border) c.push('dil-has-border');
+    case 'box':
+      c = ['dil-box'];
+      if (/(^|\s)border\b/.test(attrStr)) c.push('dil-has-border');
       if (a.background === 'surface') c.push('dil-bg-surface');
       if (a.background === 'surface-secondary') c.push('dil-bg-surface-alt');
-      if (a.align) c.push(`dil-align-${a.align}`);
-      if (a.justify) c.push(`dil-justify-${a.justify}`);
-      if (a.padding) c.push(`dil-p-${a.padding}`);
-      if (a.gap) c.push(`dil-gap-${a.gap}`);
-      if (a.radius) c.push(`dil-r-${a.radius}`);
-      if (attrStr.includes('"success"')) c.push('dil-border-success');
-      if (attrStr.includes('"error"')) c.push('dil-border-error');
-      // Block element: use \n\n so marked treats content as markdown
-      return `\n\n<div class="${c.join(' ')}">\n\n`;
-    }
-    case 'row': {
-      // Inline element: use span so markdown inside renders
-      const c = ['dil-row'];
-      if (a.align) c.push(`dil-align-${a.align}`);
-      if (a.justify) c.push(`dil-justify-${a.justify}`);
-      if (a.gap) c.push(`dil-gap-${a.gap}`);
-      return `<span class="${c.join(' ')}">`;
-    }
-    case 'text': {
-      const c = ['dil-text'];
-      if (a.color) c.push(`dil-color-${a.color}`);
-      if (a.size) c.push(`dil-size-${a.size}`);
-      if (a.weight) c.push(`dil-weight-${a.weight}`);
-      return `<span class="${c.join(' ')}">`;
-    }
-    case 'title': {
-      const t = a.size === 'lg' ? 'h2' : 'h3';
-      return `\n\n<${t} class="dil-title dil-title-${a.size || 'md'}">`;
-    }
-    case 'icon': {
-      const name = a.name || '';
-      const color = a.color || '';
-      const symbol = iconSymbol(name);
-      const cls = color ? `dil-icon dil-icon-${color}` : 'dil-icon';
-      return `<span class="${cls}" title="${name}">${symbol}</span>`;
-    }
+      if (a.direction === 'row' || /(^|\s)row(\s|$)/.test(attrStr)) c.push('dil-dir-row');
+      if (a.align) c.push('dil-align-' + a.align);
+      if (a.justify) c.push('dil-justify-' + a.justify);
+      if (a.padding) c.push('dil-p-' + a.padding);
+      if (a.gap) c.push('dil-gap-' + a.gap);
+      if (a.radius) c.push('dil-r-' + a.radius);
+      if (/"success"/.test(attrStr)) c.push('dil-border-success');
+      if (/"error"/.test(attrStr)) c.push('dil-border-error');
+      return '\n\n<div class="' + c.join(' ') + '">\n\n';
+    case 'row':
+      c = ['dil-row'];
+      if (a.align) c.push('dil-align-' + a.align);
+      if (a.justify) c.push('dil-justify-' + a.justify);
+      if (a.gap) c.push('dil-gap-' + a.gap);
+      return '<span class="' + c.join(' ') + '">';
+    case 'text':
+      c = ['dil-text'];
+      if (a.color) c.push('dil-color-' + a.color);
+      if (a.size) c.push('dil-size-' + a.size);
+      if (a.weight) c.push('dil-weight-' + a.weight);
+      return '<span class="' + c.join(' ') + '">';
+    case 'title':
+      return '\n\n<h3 class="dil-title dil-title-' + (a.size || 'md') + '">';
+    case 'icon':
+      var svg = icon(a.name || '', a.size === 'lg' ? 22 : 18);
+      return '<span class="dil-icon' + (a.color ? ' dil-icon-' + a.color : '') + '">' + (svg || '•') + '</span>';
     case 'divider':
       return '\n\n<hr class="dil-divider">\n\n';
     case 'list':
       return '\n\n<ul class="dil-list">\n\n';
     case 'list-item':
       return '<li class="dil-list-item">';
-    case 'button':
-      return '<span class="dil-button">';
     case 'badge':
       return '<span class="dil-badge">';
     case 'header':
@@ -191,238 +115,117 @@ function dilTagToHtml(tag, attrStr) {
 function dilCloseTag(tag) {
   switch (tag) {
     case 'box': case 'header': return '\n\n</div>\n\n';
-    case 'row': return '</span>';
-    case 'text': case 'button': case 'badge': return '</span>';
+    case 'row': case 'text': case 'badge': return '</span>';
     case 'title': return '</h3>\n\n';
     case 'list': return '\n\n</ul>\n\n';
     case 'list-item': return '</li>';
-    case 'icon': return '';
     default: return '';
   }
 }
 
-function iconSymbol(name) {
-  const map = {
-    'arrow-down': '↓', 'arrow-right': '→', 'arrow-left': '←', 'arrow-up': '↑',
-    'check-circle': '✓', 'check': '✓',
-    'x-circle': '✗', 'x': '✗',
-    'info': 'ℹ', 'alert-circle': '⚠', 'alert-triangle': '⚠',
-    'workflow': '⚡', 'zap': '⚡',
-    'file-json': '📄', 'file': '📄', 'file-text': '📄', 'file-code': '📄',
-    'folder-code': '📁', 'folder': '📁',
-    'shield': '🛡', 'shield-check': '🛡',
-    'lock': '🔒', 'unlock': '🔓', 'key': '🔑',
-    'code': '⟨⟩', 'terminal': '▸', 'command': '⌘',
-    'database': '🗄', 'server': '🖥',
-    'globe': '🌐', 'link': '🔗', 'external-link': '↗',
-    'search': '🔍', 'copy': '📋', 'clipboard': '📋',
-    'download': '⬇', 'upload': '⬆',
-    'settings': '⚙', 'sliders': '⚙',
-    'eye': '👁', 'clock': '🕐', 'timer': '⏱',
-    'hash': '#', 'at-sign': '@',
-    'star': '★', 'heart': '♥',
-    'play': '▶', 'pause': '⏸', 'stop': '⏹',
-    'refresh-cw': '↻', 'rotate-cw': '↻',
-    'trash': '🗑', 'edit': '✏', 'pencil': '✏',
-    'plus': '+', 'minus': '−',
-    'chevron-right': '›', 'chevron-down': '⌄', 'chevron-up': '⌃',
-    'message-square': '💬', 'user': '👤', 'users': '👥',
-    'package': '📦', 'cpu': '🔲', 'hard-drive': '💾',
-    'wifi': '📶', 'image': '🖼', 'camera': '📷',
-    'book': '📖', 'layers': '◫', 'grid': '⊞',
-    'activity': '📊', 'bar-chart': '📊',
-    'git-branch': '⑂', 'git-commit': '●',
-  };
-  return map[name] || '•';
-}
-
-// Clean DIL markup BEFORE marked.js processes markdown
-function cleanDilMarkup(text) {
-  // Strip GenUI/DIL template code that can't be rendered
-  text = text
-    // {@body const [x, setX] = DIL.useState(...)} — state declarations
-    .replace(/\{@body\s[^}]*\}/g, '')
-    // {#if ...} {/if} {#each ...} {/each} — control flow
-    .replace(/\{#if\s[^}]*\}/g, '')
-    .replace(/\{\/if\}/g, '')
-    .replace(/\{#each\s[^}]*\}/g, '')
-    .replace(/\{\/each\}/g, '')
-    .replace(/\{#else\}/g, '')
-    // {expression} standalone template expressions
-    .replace(/\{[^}]*DIL\.[^}]*\}/g, '')
-    .replace(/\{[^}]*GenUI\.[^}]*\}/g, '')
-    // GenUI.issueNewTurn(...) calls — strip entire onclick/action attributes
-    .replace(/GenUI\.issueNewTurn\([^)]*\)/g, '')
-    // <radio-group>, <radio>, <select>, <option> — interactive components → simple list
-    .replace(/<radio-group[^>]*>/gi, '<div class="dil-radio-group">')
-    .replace(/<\/radio-group>/gi, '</div>')
-    .replace(/<radio\s+([^>]*)>([\s\S]*?)<\/radio>/gi, function(_, attrs, content) {
-      var checked = /checked|selected|value="[^"]*"/.test(attrs) ? '◉' : '○';
-      return '<div class="dil-radio-item">' + checked + ' ' + content.trim() + '</div>';
-    })
-    .replace(/<radio[^>]*\/?\s*>/gi, '')
-    // <input>, <select> — form elements
-    .replace(/<input[^>]*>/gi, '')
-    .replace(/<select[^>]*>[\s\S]*?<\/select>/gi, '')
-    // Clean up excessive blank lines from stripping
-    .replace(/\n{3,}/g, '\n\n');
-
-  // Process DIL tags (box, row, text, icon, etc.)
-  return text.replace(
-    /<(\/?)(box|row|text|title|icon|divider|list|list-item|button|badge|header)\b([^>]*)>/gi,
-    function(full, slash, tag, rawAttrs) {
-      var t = tag.toLowerCase();
-      if (slash) return dilCloseTag(t);
-      // Remove trailing / from self-closing tags
-      var attrs = rawAttrs.replace(/\/\s*$/, '').trim();
-      return dilTagToHtml(t, attrs);
-    }
-  );
-}
-
-// Legacy function removed — see git history
-function _unused_cleanDilMarkup_old(text) {
-  return text
-    // --- BOX ---
-    .replace(/<box\s+([^>]*)>/gi, (_, attrs) => {
-      const data = parseDilAttrs(attrs);
-      const classes = ['dil-box'];
-      if (data.border || attrs.includes('border')) classes.push('dil-has-border');
-      if (data.background === 'surface') classes.push('dil-bg-surface');
-      if (data.background === 'surface-secondary') classes.push('dil-bg-surface-alt');
-      if (data.align) classes.push(`dil-align-${data.align}`);
-      if (data.justify) classes.push(`dil-justify-${data.justify}`);
-      if (data.padding) classes.push(`dil-p-${data.padding}`);
-      if (data.gap) classes.push(`dil-gap-${data.gap}`);
-      if (data.radius) classes.push(`dil-r-${data.radius}`);
-      // Check for border color
-      if (attrs.includes('color:"success"') || attrs.includes("color:'success'")) classes.push('dil-border-success');
-      if (attrs.includes('color:"error"') || attrs.includes("color:'error'")) classes.push('dil-border-error');
-      return `<div class="${classes.join(' ')}">`;
-    })
-    .replace(/<box>/gi, '<div class="dil-box">')
-    .replace(/<\/box>/gi, '</div>')
-
-    // --- ROW (= box with direction=row) ---
-    .replace(/<row\s+([^>]*)>/gi, (_, attrs) => {
-      const data = parseDilAttrs(attrs);
-      const classes = ['dil-row'];
-      if (data.align) classes.push(`dil-align-${data.align}`);
-      if (data.justify) classes.push(`dil-justify-${data.justify}`);
-      if (data.gap) classes.push(`dil-gap-${data.gap}`);
-      return `<div class="${classes.join(' ')}">`;
-    })
-    .replace(/<row>/gi, '<div class="dil-row">')
-    .replace(/<\/row>/gi, '</div>')
-
-    // --- TEXT ---
-    .replace(/<text\s+([^>]*)>/gi, (_, attrs) => {
-      const data = parseDilAttrs(attrs);
-      const classes = ['dil-text'];
-      if (data.color === 'secondary') classes.push('dil-color-secondary');
-      if (data.color === 'success') classes.push('dil-color-success');
-      if (data.color === 'error') classes.push('dil-color-error');
-      if (data.size) classes.push(`dil-size-${data.size}`);
-      if (data.weight) classes.push(`dil-weight-${data.weight}`);
-      return `<span class="${classes.join(' ')}">`;
-    })
-    .replace(/<text>/gi, '<span class="dil-text">')
-    .replace(/<\/text>/gi, '</span>')
-
-    // --- TITLE ---
-    .replace(/<title\s+([^>]*)>([\s\S]*?)<\/title>/gi, (_, attrs, content) => {
-      const data = parseDilAttrs(attrs);
-      const tag = data.size === 'lg' ? 'h2' : 'h3';
-      return `<${tag} class="dil-title dil-title-${data.size || 'md'}">${content}</${tag}>`;
-    })
-
-    // --- ICON ---
-    .replace(/<icon\s+([^>]*)\/?\s*>/gi, (_, attrs) => {
-      const data = parseDilAttrs(attrs);
-      const name = data.name || '';
-      const color = data.color || '';
-      const iconMap = {
-        'arrow-down': '↓', 'arrow-right': '→', 'arrow-left': '←', 'arrow-up': '↑',
-        'check-circle': '✓', 'check': '✓',
-        'x-circle': '✗', 'x': '✗',
-        'info': 'ℹ', 'alert-circle': '⚠', 'alert-triangle': '⚠',
-        'workflow': '⚡', 'zap': '⚡',
-        'file-json': '📄', 'file': '📄', 'file-text': '📄', 'file-code': '📄',
-        'folder-code': '📁', 'folder': '📁',
-        'shield': '🛡', 'shield-check': '🛡',
-        'lock': '🔒', 'unlock': '🔓',
-        'key': '🔑',
-        'code': '⟨⟩', 'terminal': '▸', 'command': '⌘',
-        'database': '🗄', 'server': '🖥',
-        'globe': '🌐', 'link': '🔗', 'external-link': '↗',
-        'search': '🔍',
-        'copy': '📋', 'clipboard': '📋',
-        'download': '⬇', 'upload': '⬆',
-        'settings': '⚙', 'sliders': '⚙',
-        'eye': '👁', 'eye-off': '👁',
-        'clock': '🕐', 'timer': '⏱',
-        'hash': '#', 'at-sign': '@',
-        'star': '★', 'heart': '♥',
-        'play': '▶', 'pause': '⏸', 'stop': '⏹',
-        'refresh-cw': '↻', 'rotate-cw': '↻',
-        'trash': '🗑', 'trash-2': '🗑',
-        'edit': '✏', 'edit-2': '✏', 'pencil': '✏',
-        'plus': '+', 'minus': '−',
-        'chevron-right': '›', 'chevron-down': '⌄', 'chevron-up': '⌃',
-        'message-square': '💬', 'message-circle': '💬',
-        'user': '👤', 'users': '👥',
-        'package': '📦', 'box': '📦',
-        'cpu': '🔲', 'hard-drive': '💾',
-        'wifi': '📶', 'wifi-off': '📵',
-        'image': '🖼', 'camera': '📷',
-        'book': '📖', 'book-open': '📖',
-        'layers': '◫', 'grid': '⊞',
-        'activity': '📊', 'bar-chart': '📊', 'pie-chart': '📊',
-        'git-branch': '⑂', 'git-commit': '●', 'git-merge': '⑃',
-      };
-      const symbol = iconMap[name] || '•';
-      const cls = color ? `dil-icon dil-icon-${color}` : 'dil-icon';
-      return `<span class="${cls}" title="${name}">${symbol}</span>`;
-    })
-    .replace(/<icon[^>]*>/gi, '<span class="dil-icon">•</span>')
-    .replace(/<\/icon>/gi, '')
-
-    // --- DIVIDER ---
-    .replace(/<divider[^>]*\/?\s*>/gi, '<hr class="dil-divider">')
-
-    // --- LIST ---
-    .replace(/<list\s+([^>]*)>/gi, '<ul class="dil-list">')
-    .replace(/<list>/gi, '<ul class="dil-list">')
-    .replace(/<\/list>/gi, '</ul>')
-    .replace(/<list-item[^>]*>/gi, '<li class="dil-list-item">')
-    .replace(/<\/list-item>/gi, '</li>')
-
-    // --- BUTTON ---
-    .replace(/<button\s+([^>]*)>([\s\S]*?)<\/button>/gi, (_, attrs, content) => {
-      return `<span class="dil-button">${content}</span>`;
-    })
-    .replace(/<button>([\s\S]*?)<\/button>/gi, '<span class="dil-button">$1</span>')
-
-    // --- BADGE ---
-    .replace(/<badge[^>]*>([\s\S]*?)<\/badge>/gi, '<span class="dil-badge">$1</span>')
-
-    // --- TABLE passthrough (already handled by marked.js) ---
-    // --- CODE inline (handled by marked.js) ---
-
-    // Clean up empty paragraphs that can result from block-level elements inside <p>
-    .replace(/<p>\s*<\/p>/g, '')
-    .replace(/<p>\s*(<div)/g, '$1')
-    .replace(/<\/div>\s*<\/p>/g, '</div>');
-}
-
 function parseDilAttrs(attrString) {
-  const result = {};
-  // Match key="value" or key={value} or key=value or standalone key
-  const matches = attrString.matchAll(/(\w+)(?:="([^"]*)"|=\{([^}]*)\}|=(\S+))?/g);
-  for (const m of matches) {
-    const key = m[1];
-    const val = m[2] ?? m[3] ?? m[4] ?? '';
-    result[key] = val;
+  var result = {};
+  var re = /([\w-]+)(?:="([^"]*)"|=\{([^}]*)\}|=(\S+))?/g, m;
+  while ((m = re.exec(attrString))) {
+    result[m[1]] = m[2] !== undefined ? m[2] : m[3] !== undefined ? m[3] : m[4] !== undefined ? m[4] : '';
   }
   return result;
 }
+
+function linkifyFilePaths(html) {
+  return html.replace(/<code>([^<]+)<\/code>/g, function (full, content) {
+    var raw = content.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"');
+    if (!isFilePath(raw)) return full;
+    return '<code class="file-link" data-path="' + escAttr(raw.replace(/:\d+(?::\d+)?$/, '')) + '" title="Show in folder">' + content + '</code>';
+  });
+}
+
+function isFilePath(text) {
+  if (/\s/.test(text) || /:\/\//.test(text)) return /^[A-Za-z]:\\/.test(text);
+  if (/^[A-Za-z]:\\/.test(text)) return true;
+  if (/^\/[A-Za-z]/.test(text) && /\//.test(text.slice(1))) return true;
+  return /[\/\\]/.test(text) && /\.\w{1,10}(:\d+){0,2}$/.test(text);
+}
+
+// Model output is untrusted and the webview can call backend commands,
+// so strip active content before it reaches innerHTML.
+var BLOCKED_TAGS = { SCRIPT: 1, IFRAME: 1, FRAME: 1, FRAMESET: 1, OBJECT: 1, EMBED: 1, LINK: 1, META: 1, BASE: 1, STYLE: 1, FORM: 1 };
+
+function sanitizeHtml(html) {
+  var tpl = document.createElement('template');
+  tpl.innerHTML = html;
+  tpl.content.querySelectorAll('*').forEach(function (el) {
+    if (BLOCKED_TAGS[el.tagName.toUpperCase()]) { el.remove(); return; }
+    for (var i = el.attributes.length - 1; i >= 0; i--) {
+      var name = el.attributes[i].name.toLowerCase();
+      var value = el.attributes[i].value;
+      if (name.indexOf('on') === 0 || name === 'style' || name === 'formaction' || name === 'srcdoc') {
+        el.removeAttribute(el.attributes[i].name);
+      } else if ((name === 'href' || name === 'src' || name === 'xlink:href' || name === 'action') &&
+                 /^\s*(javascript|vbscript|data):/i.test(value) && !/^\s*data:image\//i.test(value)) {
+        el.removeAttribute(el.attributes[i].name);
+      }
+    }
+  });
+  return tpl.innerHTML;
+}
+
+function copyToClipboard(text) {
+  if (window.__TAURI__ && window.__TAURI__.core) {
+    return window.__TAURI__.core.invoke('copy_text', { text: text });
+  }
+  var ta = document.createElement('textarea');
+  ta.value = text;
+  ta.style.cssText = 'position:fixed;left:-9999px;top:0';
+  document.body.appendChild(ta);
+  ta.select();
+  var ok = false;
+  try { ok = document.execCommand('copy'); } catch (e) {}
+  document.body.removeChild(ta);
+  if (ok) return Promise.resolve();
+  return navigator.clipboard ? navigator.clipboard.writeText(text) : Promise.reject(new Error('Clipboard unavailable'));
+}
+
+function flashCopied(btn) {
+  var original = btn.innerHTML;
+  btn.innerHTML = icon('check', 18);
+  btn.classList.add('copied');
+  setTimeout(function () { btn.innerHTML = original; btn.classList.remove('copied'); }, 1500);
+}
+
+document.addEventListener('click', function (e) {
+  var target = e.target;
+  if (!target.closest) return;
+
+  var actionEl = target.closest('[data-action]');
+  if (actionEl) {
+    var action = actionEl.getAttribute('data-action');
+    if (action === 'copy-code') {
+      var code = actionEl.closest('.code-block').querySelector('pre code');
+      copyToClipboard(code.textContent).then(function () { flashCopied(actionEl); }, function (err) { console.error(err); });
+      return;
+    }
+    if (action === 'wrap-code') {
+      var pre = actionEl.closest('.code-block').querySelector('pre');
+      pre.classList.toggle('wrap');
+      actionEl.classList.toggle('active', pre.classList.contains('wrap'));
+      return;
+    }
+  }
+
+  var fileLink = target.closest('.file-link');
+  if (fileLink && window.__TAURI__) {
+    window.__TAURI__.core.invoke('open_file_path', { path: fileLink.getAttribute('data-path') })
+      .catch(function (err) { console.warn(err); });
+    return;
+  }
+
+  var anchor = target.closest('.msg-assistant a[href]');
+  if (anchor) {
+    e.preventDefault();
+    var href = anchor.getAttribute('href');
+    if (/^https?:\/\//i.test(href) && window.__TAURI__) {
+      window.__TAURI__.core.invoke('open_url', { url: href }).catch(function (err) { console.warn(err); });
+    }
+  }
+});

@@ -1,236 +1,241 @@
 const { invoke } = window.__TAURI__.core;
+const $ = (id) => document.getElementById(id);
 
-const loginOverlay = document.getElementById('login-overlay');
-const tokenInput = document.getElementById('token-input');
-const tokenSaveBtn = document.getElementById('token-save-btn');
-const statusText = document.getElementById('status-text');
-const newChatBtn = document.getElementById('new-chat-btn');
-const chatList = document.getElementById('chat-list');
-const messagesEl = document.getElementById('messages');
-const chatInput = document.getElementById('chat-input');
-const sendBtn = document.getElementById('send-btn');
-const goalBtn = document.getElementById('goal-btn');
+const appEl = $('app');
+const mainEl = $('main');
+const loginOverlay = $('login-overlay');
+const tokenInput = $('token-input');
+const loginError = $('login-error');
+const chatInput = $('chat-input');
+const sendBtn = $('send-btn');
+const goalBtn = $('goal-btn');
+const goalChip = $('goal-chip');
+const titleEl = $('chat-title');
+const statusEl = $('status-text');
+const searchBox = $('sb-search');
+const searchInput = $('sb-search-input');
 
 let currentConversationId = null;
 let sending = false;
 let isFirstMessage = true;
+let goalMode = false;
 
-const chat = new Chat(messagesEl);
+hydrateIcons();
 
-const sidebar = new Sidebar(chatList, {
-  onSelect: async (id) => {
-    currentConversationId = id;
-    sidebar.setActive(id);
-    statusText.textContent = 'Loading...';
-    try {
-      const conv = await invoke('get_conversation_cmd', { id });
-      await invoke('set_conversation', { id: conv.id, parentId: conv.current_node });
-      chat.loadConversation(conv.messages);
-      statusText.textContent = conv.title;
-      isFirstMessage = false;
-    } catch (e) {
-      statusText.textContent = `Error: ${e}`;
-    }
-  },
-  onNew: () => startNewChat(),
-  onDelete: async (id, title) => {
-    try {
-      await invoke('delete_conversation_cmd', { id });
-      if (id === currentConversationId) startNewChat();
-      sidebar.refresh();
-    } catch (e) {
-      statusText.textContent = `Delete failed: ${e}`;
-    }
-  },
+const chat = new Chat($('thread'), $('messages'), mainEl);
+const sidebar = new Sidebar($('chat-list'), {
+  onSelect: openConversation,
+  onDelete: deleteConversation,
 });
 
+function setTitle(title) {
+  titleEl.textContent = title || 'ChatGPT';
+  document.title = title ? `${title} - ChatGPT` : 'ChatGPT';
+}
+
+function setStatus(text) {
+  statusEl.textContent = text;
+}
+
+function handleAuthError(e) {
+  const s = String(e);
+  if (s.includes('401') || s.includes('expired') || s.includes('No token')) showLogin('Your session expired. Paste a new access token.');
+}
+
+function showLogin(message) {
+  loginError.textContent = message || '';
+  loginOverlay.hidden = false;
+  tokenInput.focus();
+}
+
+function toolPairs(response) {
+  return response.tool_calls.map((call, i) => ({ call, result: response.tool_results[i] }));
+}
+
+function updateSendState() {
+  sendBtn.disabled = sending || !chatInput.value.trim();
+  sendBtn.classList.toggle('busy', sending);
+}
+
+function setSending(value) {
+  sending = value;
+  updateSendState();
+  setStatus(value ? 'Thinking…' : 'Ready');
+}
+
+function setGoalMode(value) {
+  goalMode = value;
+  goalBtn.classList.toggle('active', value);
+  goalChip.hidden = !value;
+  chatInput.placeholder = value ? 'Describe the goal to work on…' : 'Ask ChatGPT';
+}
+
+function autosize() {
+  chatInput.style.height = 'auto';
+  chatInput.style.height = Math.min(chatInput.scrollHeight, 220) + 'px';
+}
+
+async function openConversation(id) {
+  if (sending) return;
+  currentConversationId = id;
+  sidebar.setActive(id);
+  setTitle(sidebar.titleOf(id));
+  setStatus('Loading…');
+  try {
+    const conv = await invoke('get_conversation_cmd', { id });
+    await invoke('set_conversation', { id: conv.id, parentId: conv.current_node });
+    chat.loadConversation(conv.messages);
+    setTitle(conv.title);
+    isFirstMessage = false;
+    setStatus('Ready');
+  } catch (e) {
+    chat.clear();
+    chat.addNotice(`Could not open this chat: ${e}`);
+    setStatus('Error');
+    handleAuthError(e);
+  }
+}
+
+async function deleteConversation(id) {
+  try {
+    await invoke('delete_conversation_cmd', { id });
+    if (id === currentConversationId) startNewChat();
+    await sidebar.refresh();
+  } catch (e) {
+    setStatus('Delete failed');
+    handleAuthError(e);
+  }
+}
+
 function startNewChat() {
+  if (sending) return;
   currentConversationId = null;
   isFirstMessage = true;
   chat.clear();
   invoke('new_conversation');
   sidebar.setActive(null);
-  statusText.textContent = 'New chat';
+  setTitle(null);
+  setStatus('Ready');
+  chatInput.focus();
 }
 
-function processResponse(response) {
-  // Show tool calls inline
-  for (let i = 0; i < response.tool_calls.length; i++) {
-    const tc = response.tool_calls[i];
-    const tr = response.tool_results[i];
-    messagesEl.appendChild(renderToolCall(tc.name, tc.args));
-    if (tr) {
-      messagesEl.appendChild(renderToolResult(tr.result, tr.error));
-    }
-  }
-
-  // Collect full assistant text from events
-  let fullText = '';
-  for (const ev of response.events) {
-    if (ev.type === 'text') fullText += ev.delta;
-    if (ev.type === 'done') {
-      currentConversationId = ev.conversation_id;
-      sidebar.setActive(ev.conversation_id);
-    }
-  }
-
-  return fullText;
+async function afterTurn() {
+  await sidebar.refresh();
+  sidebar.setActive(currentConversationId);
+  setTitle(sidebar.titleOf(currentConversationId));
 }
 
-async function sendMessage() {
-  const text = chatInput.value.trim();
+async function sendText(text) {
+  text = text.trim();
   if (!text || sending) return;
-  sending = true;
-  sendBtn.disabled = true;
-  goalBtn.disabled = true;
-  chatInput.value = '';
-  chatInput.style.height = 'auto';
+  if (goalMode) return startGoal(text);
 
+  setSending(true);
   chat.addUserMessage(text);
-  chat.startAssistantMessage();
-  statusText.textContent = 'Thinking...';
-
+  chat.startPending();
   try {
     const response = await invoke('send_message', { text, isFirst: isFirstMessage });
     isFirstMessage = false;
-
-    // Process tool calls
-    for (let i = 0; i < response.tool_calls.length; i++) {
-      const tc = response.tool_calls[i];
-      const tr = response.tool_results[i];
-      messagesEl.appendChild(renderToolCall(tc.name, tc.args));
-      if (tr) messagesEl.appendChild(renderToolResult(tr.result, tr.error));
-    }
-
-    // Show final response
-    const fullText = response.full_text || response.events
-      .filter(e => e.type === 'text')
-      .map(e => e.delta)
-      .join('');
-
-    if (fullText) {
-      chat.appendDelta(fullText);
-    }
-    chat.finishMessage();
-
-    // Update conversation from done event
-    const doneEv = response.events.find(e => e.type === 'done');
-    if (doneEv) {
-      currentConversationId = doneEv.conversation_id;
-      sidebar.setActive(doneEv.conversation_id);
-    }
-
-    statusText.textContent = response.tool_calls.length > 0
-      ? `Ready (${response.tool_calls.length} tools used)`
-      : 'Ready';
-    sidebar.refresh();
+    const fullText = response.full_text ||
+      response.events.filter((e) => e.type === 'text').map((e) => e.delta).join('');
+    chat.completePending(fullText, toolPairs(response));
+    const done = response.events.find((e) => e.type === 'done');
+    if (done && done.conversation_id) currentConversationId = done.conversation_id;
+    await afterTurn();
   } catch (e) {
-    chat.finishMessage();
-    chat.addErrorMessage(`Error: ${e}`);
-    statusText.textContent = 'Error';
-    if (String(e).includes('401') || String(e).includes('expired')) {
-      loginOverlay.classList.remove('hidden');
-    }
+    chat.failPending(`Something went wrong: ${e}`);
+    handleAuthError(e);
+  } finally {
+    setSending(false);
   }
-  sending = false;
-  sendBtn.disabled = false;
-  goalBtn.disabled = false;
-  chatInput.focus();
 }
 
-async function startGoal() {
-  const task = prompt('Enter your goal:');
-  if (!task?.trim()) return;
-
-  sending = true;
-  sendBtn.disabled = true;
-  goalBtn.disabled = true;
-
-  chat.addUserMessage(`[Goal] ${task}`);
-
-  const banner = document.createElement('div');
-  banner.className = 'goal-banner';
-  banner.textContent = '🎯 Goal Mode — working autonomously...';
-  messagesEl.appendChild(banner);
-
-  statusText.textContent = 'Goal: working...';
-
+async function startGoal(task) {
+  setGoalMode(false);
+  setSending(true);
+  chat.addUserMessage(task);
+  const notice = chat.addNotice('Goal mode · working autonomously…');
+  chat.startPending();
   try {
     const result = await invoke('start_goal', { task });
-
-    banner.textContent = result.complete
-      ? `✅ Goal complete! (${result.iterations} iterations, ${result.total_calls} API calls)`
-      : `⏹ Goal stopped (${result.iterations} iterations, ${result.total_calls} API calls)`;
-
-    // Show final response
-    if (result.responses.length > 0) {
-      const last = result.responses[result.responses.length - 1];
-
-      for (let i = 0; i < last.tool_calls.length; i++) {
-        messagesEl.appendChild(renderToolCall(last.tool_calls[i].name, last.tool_calls[i].args));
-        if (last.tool_results[i]) messagesEl.appendChild(renderToolResult(last.tool_results[i].result, last.tool_results[i].error));
-      }
-
-      chat.startAssistantMessage();
-      const text = last.full_text.replace('[GOAL_COMPLETE]', '').trim();
-      if (text) chat.appendDelta(text);
-      chat.finishMessage();
-    }
-
-    statusText.textContent = result.complete ? 'Goal complete!' : 'Goal stopped';
-    sidebar.refresh();
+    isFirstMessage = false;
+    notice.textContent = `${result.complete ? 'Goal complete' : 'Goal stopped'} · ${result.iterations} iterations · ${result.total_calls} API calls`;
+    const last = result.responses[result.responses.length - 1];
+    const text = last ? last.full_text.replace('[GOAL_COMPLETE]', '').trim() : '';
+    chat.completePending(text, result.responses.flatMap(toolPairs));
+    await afterTurn();
   } catch (e) {
-    banner.textContent = `❌ Goal failed: ${e}`;
-    chat.addErrorMessage(`Goal error: ${e}`);
-    statusText.textContent = 'Error';
+    notice.textContent = 'Goal failed';
+    chat.failPending(`Goal error: ${e}`);
+    handleAuthError(e);
+  } finally {
+    setSending(false);
   }
-  sending = false;
-  sendBtn.disabled = false;
-  goalBtn.disabled = false;
-  chatInput.focus();
 }
 
-// Event listeners
-tokenSaveBtn.addEventListener('click', async () => {
+function submitComposer() {
+  const text = chatInput.value;
+  if (!text.trim() || sending) return;
+  chatInput.value = '';
+  autosize();
+  updateSendState();
+  sendText(text);
+}
+
+window.chatApp = { sendText, canSend: () => !sending };
+
+chatInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
+    e.preventDefault();
+    submitComposer();
+  }
+});
+chatInput.addEventListener('input', () => { autosize(); updateSendState(); });
+sendBtn.addEventListener('click', submitComposer);
+goalBtn.addEventListener('click', () => { setGoalMode(!goalMode); chatInput.focus(); });
+$('goal-chip-close').addEventListener('click', () => { setGoalMode(false); chatInput.focus(); });
+$('goal-nav-btn').addEventListener('click', () => { setGoalMode(true); chatInput.focus(); });
+
+$('new-chat-btn').addEventListener('click', startNewChat);
+$('topbar-new-btn').addEventListener('click', startNewChat);
+$('collapse-btn').addEventListener('click', () => appEl.classList.add('sb-collapsed'));
+$('open-sidebar-btn').addEventListener('click', () => appEl.classList.remove('sb-collapsed'));
+
+$('search-btn').addEventListener('click', () => {
+  searchBox.hidden = !searchBox.hidden;
+  if (searchBox.hidden) { searchInput.value = ''; sidebar.setFilter(''); } else searchInput.focus();
+});
+searchInput.addEventListener('input', () => sidebar.setFilter(searchInput.value));
+searchInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') { searchInput.value = ''; sidebar.setFilter(''); searchBox.hidden = true; }
+});
+
+$('logout-btn').addEventListener('click', async () => {
+  try { await invoke('clear_token'); } catch (e) { console.error(e); }
+  showLogin('');
+});
+
+$('token-save-btn').addEventListener('click', async () => {
   const token = tokenInput.value.trim();
   if (!token) return;
   try {
     await invoke('save_token', { token });
-    loginOverlay.classList.add('hidden');
-    statusText.textContent = 'Token saved';
+    loginOverlay.hidden = true;
     tokenInput.value = '';
-    sidebar.refresh();
+    loginError.textContent = '';
+    await sidebar.refresh();
   } catch (e) {
-    statusText.textContent = `Error: ${e}`;
+    loginError.textContent = String(e);
   }
-});
-
-newChatBtn.addEventListener('click', startNewChat);
-sendBtn.addEventListener('click', sendMessage);
-goalBtn.addEventListener('click', startGoal);
-
-chatInput.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter' && !e.shiftKey) {
-    e.preventDefault();
-    sendMessage();
-  }
-});
-
-chatInput.addEventListener('input', () => {
-  chatInput.style.height = 'auto';
-  chatInput.style.height = Math.min(chatInput.scrollHeight, 200) + 'px';
 });
 
 async function init() {
+  chat.clear();
+  setTitle(null);
+  updateSendState();
   const token = await invoke('get_token');
-  if (!token) {
-    loginOverlay.classList.remove('hidden');
-    statusText.textContent = 'No token';
-  } else {
-    loginOverlay.classList.add('hidden');
-    statusText.textContent = 'Ready';
-    sidebar.refresh();
-  }
+  if (!token) showLogin('');
+  else await sidebar.refresh();
   chatInput.focus();
 }
 
