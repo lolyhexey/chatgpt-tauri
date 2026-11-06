@@ -55,7 +55,7 @@ fn make_client(state: &AppState) -> Result<ChatGptClient, String> {
 async fn send_message(
     text: String,
     state: tauri::State<'_, AppState>,
-    app: tauri::AppHandle,
+    _app: tauri::AppHandle,
 ) -> Result<Vec<StreamEvent>, String> {
     let mut client = make_client(&state)?;
     let events = client.send_message(&text).await?;
