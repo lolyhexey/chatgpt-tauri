@@ -19,7 +19,7 @@ marked.setOptions({
   breaks: true,
 });
 
-export function renderMarkdown(text) {
+function renderMarkdown(text) {
   if (!text) return '';
   try {
     // 1. Convert DIL tags to HTML BEFORE marked

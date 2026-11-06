@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>DIL Render Test</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="vendor/github-dark.min.css">
+  <script src="vendor/marked.min.js"></script>
+  <script src="vendor/highlight.min.js"></script>
+</head>
+<body style="padding:20px; max-width:768px; margin:auto;">
+  <h1 style="color:var(--text-primary)">DIL Render Test</h1>
+  <div id="output" class="msg-assistant"></div>
+
+  <script type="module">
+    import { renderMarkdown } from './markdown.js';
+
+    const testContent = `ผมถอดรหัส \`e-san-vpn.json\` ด้วยการ **Reverse Engineering** อัลกอริทึมจาก APK
+
+## ขั้นตอนที่ผมทำ
+
+<box border radius="md" padding={3} align="center" gap={1}>
+  **Decryption Pipeline**
+</box>
+
+<row align="center" gap={2}>
+  <icon name="workflow" color="secondary"/>
+  **Pipeline Overview**
+</row>
+
+<box border radius="lg" padding={3} align="center" gap={1}>
+  **HTTP Response** <text color="secondary" size="xs">Base64 · 26,996 characters</text>
+  <box row justify="center"><icon name="arrow-down"/></box>
+  **Base64 Decode** <text color="secondary" size="xs">20,247 encrypted bytes</text>
+  <box row justify="center"><icon name="arrow-down"/></box>
+  **PBKDF2-HMAC-SHA256** <text color="secondary" size="xs">สร้าง Key Material 256-bit</text>
+  <box row justify="center"><icon name="arrow-down"/></box>
+  **HKDF-HMAC-SHA256** <text color="secondary" size="xs">สร้าง AES Key จาก Header Salt</text>
+  <box row justify="center"><icon name="arrow-down"/></box>
+  **AES-256-GCM Streaming** <text color="secondary" size="xs">ถอดรหัสและตรวจ Authentication Tag ทั้ง 5 segments</text>
+</box>
+
+<row align="center" gap={2}>
+  <icon name="check-circle" color="success"/>
+  **ลบ Comment ทั้งหมดออกจาก 'fetch_decrypt_live.mjs' เรียบร้อยแล้ว**
+</row>
+
+<box background="surface" radius="md" padding={3}>
+  <text color="secondary" size="xs">Decrypted JSON</text>
+  <text color="secondary" size="xs">20,127 plaintext bytes</text>
+</box>
+
+### สรุป
+1. หาอัลกอริทึมจาก DEX ใช้ JADX ถอด \`classes.dex\`
+2. สร้าง Key Material ด้วย PBKDF2
+3. ถอดรหัส AES-GCM ครบ 5 segments
+
+\`\`\`python
+import base64
+import hashlib
+key = hashlib.pbkdf2_hmac("sha256", password, salt, 100000, 32)
+\`\`\`
+`;
+
+    document.getElementById('output').innerHTML = renderMarkdown(testContent);
+  </script>
+</body>
+</html>

@@ -1,6 +1,4 @@
-import { renderMarkdown } from './markdown.js';
-
-export class Chat {
+class Chat {
   constructor(container) {
     this.container = container;
     this.currentAssistant = null;

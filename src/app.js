@@ -1,7 +1,3 @@
-import { Sidebar } from './sidebar.js';
-import { Chat } from './chat.js';
-import { renderToolCall, renderToolResult, renderAgentProgress } from './tools-ui.js';
-
 const { invoke } = window.__TAURI__.core;
 
 const loginOverlay = document.getElementById('login-overlay');

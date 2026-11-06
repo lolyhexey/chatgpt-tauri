@@ -1,4 +1,4 @@
-export function renderToolCall(name, args) {
+function renderToolCall(name, args) {
   const div = document.createElement('div');
   div.className = 'tool-block';
 
@@ -21,7 +21,7 @@ export function renderToolCall(name, args) {
   return div;
 }
 
-export function renderToolResult(result, error) {
+function renderToolResult(result, error) {
   const div = document.createElement('div');
   div.className = 'tool-result' + (error ? ' tool-error' : '');
 
@@ -33,7 +33,7 @@ export function renderToolResult(result, error) {
   return div;
 }
 
-export function renderAgentProgress(agents) {
+function renderAgentProgress(agents) {
   const div = document.createElement('div');
   div.className = 'agent-panel';
   div.innerHTML = `<div class="agent-header">🤖 Parallel Agents (${agents.length})</div>`;

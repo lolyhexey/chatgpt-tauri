@@ -1,6 +1,5 @@
-const { invoke } = window.__TAURI__.core;
-
-export class Sidebar {
+class Sidebar {
+  get invoke() { return window.__TAURI__.core.invoke; }
   constructor(container, { onSelect, onNew, onDelete }) {
     this.container = container;
     this.onSelect = onSelect;
@@ -12,7 +11,7 @@ export class Sidebar {
 
   async refresh() {
     try {
-      const data = await invoke('list_conversations_cmd', { offset: 0, limit: 50 });
+      const data = await this.invoke('list_conversations_cmd', { offset: 0, limit: 50 });
       this.items = data.items;
       this.render();
     } catch (e) {
