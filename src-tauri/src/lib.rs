@@ -1,3 +1,4 @@
+mod agents;
 mod api;
 mod api_helpers;
 mod auth;
