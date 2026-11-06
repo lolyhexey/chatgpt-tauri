@@ -6,38 +6,21 @@ function _initMarked() {
   _markedReady = true;
 
   var renderer = new marked.Renderer();
-  renderer.code = function (opts) {
-    var text = opts.text || '';
-    var lang = opts.lang || '';
+  renderer.code = function (code, lang) {
+    // marked.js v12 sends (code, lang, escaped) as separate args
+    var text = code || '';
     var language = lang && hljs.getLanguage(lang) ? lang : 'plaintext';
     var highlighted = hljs.highlight(text, { language: language }).value;
     var langDisplay = lang || 'code';
     return '<div class="code-block">' +
       '<div class="code-header">' +
         '<span class="code-lang">' + langDisplay + '</span>' +
-        '<button class="copy-btn" onclick="copyCode(this)">&#x1F4CB; Copy</button>' +
+        '<div class="code-actions">' +
+          '<button class="copy-btn" onclick="copyCode(this)" title="Copy code">&#x1F4CB;</button>' +
+        '</div>' +
       '</div>' +
       '<div class="code-scroll"><pre><code class="hljs language-' + language + '">' + highlighted + '</code></pre></div>' +
     '</div>';
-  };
-
-  renderer.table = function (token) {
-    var header = token.header || [];
-    var rows = token.rows || [];
-    var html = '<div class="table-wrapper"><table><thead><tr>';
-    for (var h of header) {
-      html += '<th>' + (h.tokens ? this.parser.parseInline(h.tokens) : h.text) + '</th>';
-    }
-    html += '</tr></thead><tbody>';
-    for (var row of rows) {
-      html += '<tr>';
-      for (var cell of row) {
-        html += '<td>' + (cell.tokens ? this.parser.parseInline(cell.tokens) : cell.text) + '</td>';
-      }
-      html += '</tr>';
-    }
-    html += '</tbody></table></div>';
-    return html;
   };
 
   marked.setOptions({ renderer: renderer, gfm: true, breaks: true });
@@ -95,15 +78,43 @@ function escapeHtml(text) {
 window.copyCode = function (btn) {
   var pre = btn.closest('.code-block').querySelector('pre code');
   var text = pre.textContent;
-  navigator.clipboard.writeText(text).then(function() {
-    btn.innerHTML = '&#x2705; Copied!';
+  copyToClipboard(text).then(function() {
+    btn.innerHTML = '&#x2705;';
     btn.classList.add('copied');
     setTimeout(function() {
-      btn.innerHTML = '&#x1F4CB; Copy';
+      btn.innerHTML = '&#x1F4CB;';
       btn.classList.remove('copied');
     }, 1200);
   });
 };
+
+function copyToClipboard(text) {
+  // Try Tauri clipboard first
+  if (window.__TAURI__ && window.__TAURI__.clipboard) {
+    return window.__TAURI__.clipboard.writeText(text);
+  }
+  // Try navigator.clipboard
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    return navigator.clipboard.writeText(text).catch(function() {
+      return fallbackCopy(text);
+    });
+  }
+  // Fallback: textarea + execCommand
+  return fallbackCopy(text);
+}
+
+function fallbackCopy(text) {
+  return new Promise(function(resolve) {
+    var ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.cssText = 'position:fixed;left:-9999px;top:-9999px';
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    document.body.removeChild(ta);
+    resolve();
+  });
+}
 
 window.openFilePath = function (el) {
   var path = el.getAttribute('data-path');

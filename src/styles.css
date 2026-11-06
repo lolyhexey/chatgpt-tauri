@@ -14,8 +14,8 @@
   --border: rgba(255, 255, 255, 0.1);
   --user-bubble-bg: #173e76;
   --user-bubble-color: #f6fafe;
-  --code-bg: #000;
-  --code-header-bg: #2f2f2f;
+  --code-bg: #1e1e1e;
+  --code-header-bg: #2b2b2b;
   --input-bg: #303030;
   --error: #ef4444;
   --sidebar-width: 260px;
@@ -215,11 +215,13 @@ body {
   margin: 16px 0;
   position: relative;
   border: 1px solid rgba(255, 255, 255, 0.1);
+  color: #e6edf3;
 }
 
 .msg-assistant code {
   font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
   font-size: 14px;
+  color: #e6edf3;
 }
 
 .msg-assistant p code {
@@ -236,41 +238,53 @@ body {
   border-radius: 12px;
   overflow: hidden;
   background: var(--code-bg);
-  border: 1px solid rgba(255,255,255,0.1);
 }
 
 .code-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 8px 16px;
+  padding: 10px 16px;
   background: var(--code-header-bg);
   font-size: 13px;
-  color: var(--text-secondary);
+  color: #cdcdcd;
   position: sticky;
   top: 0;
   z-index: 1;
-  backdrop-filter: blur(8px);
 }
 
 .code-lang {
   font-weight: 500;
   font-size: 13px;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.code-lang::before {
+  content: '</>';
+  font-weight: 700;
+  font-size: 12px;
+}
+
+.code-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
 }
 
 .copy-btn {
   background: none;
   border: none;
-  color: var(--text-secondary);
+  color: #cdcdcd;
   padding: 4px 8px;
   border-radius: 6px;
   cursor: pointer;
-  font-size: 13px;
+  font-size: 18px;
   transition: all 0.15s;
+  line-height: 1;
 }
-.copy-btn:hover { color: var(--text-primary); background: rgba(255,255,255,0.08); }
+.copy-btn:hover { color: #fff; background: rgba(255,255,255,0.1); }
 .copy-btn.copied { color: var(--accent); }
 
 .code-scroll {
@@ -282,9 +296,15 @@ body {
   margin: 0;
   padding: 16px;
   overflow-x: auto;
-  background: transparent;
+  background: transparent !important;
   line-height: 1.6;
   border: none;
+  color: #e6edf3;
+}
+
+.code-block .hljs {
+  background: transparent !important;
+  padding: 0;
 }
 
 /* Tables */
