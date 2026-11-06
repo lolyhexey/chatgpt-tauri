@@ -1,34 +1,30 @@
-const renderer = new marked.Renderer();
+var _markedReady = false;
 
-renderer.code = function ({ text, lang }) {
-  const language = lang && hljs.getLanguage(lang) ? lang : 'plaintext';
-  const highlighted = hljs.highlight(text, { language }).value;
-  const langLabel = lang || '';
-  return `<div class="code-block">
-    <div class="code-header">
-      <span class="code-lang">${langLabel}</span>
-      <button class="copy-btn" onclick="copyCode(this)">Copy</button>
-    </div>
-    <pre><code class="hljs language-${language}">${highlighted}</code></pre>
-  </div>`;
-};
+function _initMarked() {
+  if (_markedReady) return;
+  if (typeof marked === 'undefined' || typeof hljs === 'undefined') return;
+  _markedReady = true;
 
-marked.setOptions({
-  renderer,
-  gfm: true,
-  breaks: true,
-});
+  var renderer = new marked.Renderer();
+  renderer.code = function (opts) {
+    var text = opts.text || '';
+    var lang = opts.lang || '';
+    var language = lang && hljs.getLanguage(lang) ? lang : 'plaintext';
+    var highlighted = hljs.highlight(text, { language: language }).value;
+    return '<div class="code-block"><div class="code-header"><span class="code-lang">' + lang + '</span><button class="copy-btn" onclick="copyCode(this)">Copy</button></div><pre><code class="hljs language-' + language + '">' + highlighted + '</code></pre></div>';
+  };
+
+  marked.setOptions({ renderer: renderer, gfm: true, breaks: true });
+}
 
 function renderMarkdown(text) {
   if (!text) return '';
+  _initMarked();
+  if (!_markedReady) return escapeHtml(text);
   try {
-    // 1. Convert DIL tags to HTML BEFORE marked
-    //    Use <span> for inline elements (row, text, icon) so markdown inside them renders
-    //    Use \n\n<div>\n\n for block elements (box) — blank lines make marked treat them as HTML blocks
-    let cleaned = cleanDilMarkup(text);
-    // 2. Run marked — processes markdown (bold, code, lists) + preserves our HTML
+    var cleaned = cleanDilMarkup(text);
     return marked.parse(cleaned);
-  } catch {
+  } catch (e) {
     return escapeHtml(text);
   }
 }
