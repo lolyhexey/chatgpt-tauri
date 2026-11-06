@@ -45,15 +45,38 @@ function renderMarkdown(text) {
 function transformMarkup(text) {
   return text.split(/(```[\s\S]*?(?:```|$)|~~~[\s\S]*?(?:~~~|$))/).map(function (seg, i) {
     if (i % 2 === 1) return seg;
+    seg = collapseRows(dedentDilBlocks(seg));
     seg = transformDil(transformGenUI(seg));
     // Indented HTML lines would otherwise become markdown code blocks.
     return seg.replace(/^[ \t]+(?=<)/gm, '');
   }).join('');
 }
 
+var DIL_CONTAINER_OPEN = /<(box|grid-item|grid|row|radio-group)(\s[^>]*[^\/]|)>/g;
+var DIL_CONTAINER_CLOSE = /<\/(box|grid-item|grid|row|radio-group)>/g;
+
+// Content indented inside DIL containers is layout indentation, not a markdown code block.
+function dedentDilBlocks(seg) {
+  if (!/<(box|grid|row|radio-group)\b/.test(seg)) return seg;
+  var depth = 0;
+  return seg.split('\n').map(function (line) {
+    var out = depth > 0 ? line.replace(/^[ \t]+/, '') : line;
+    depth += (line.match(DIL_CONTAINER_OPEN) || []).length - (line.match(DIL_CONTAINER_CLOSE) || []).length;
+    if (depth < 0) depth = 0;
+    return out;
+  }).join('\n');
+}
+
+// A <row> is one flex line; join its lines so markdown inside it renders inline.
+function collapseRows(seg) {
+  return seg.replace(/<row\b[^>]*>[\s\S]*?<\/row>/g, function (block) {
+    return /<(box|grid|radio-group)\b/.test(block) ? block : block.split('\n').map(function (l) { return l.trim(); }).join(' ');
+  });
+}
+
 function transformDil(text) {
   return text.replace(
-    /<(\/?)(box|row|text|title|icon|divider|list|list-item|badge|header)\b([^>]*)>/gi,
+    /<(\/?)(box|row|text|title|icon|divider|list-item|list|badge|header|grid-item|grid|caption)\b([^>]*)>/gi,
     function (full, slash, tag, rawAttrs) {
       var t = tag.toLowerCase();
       if (slash) return dilCloseTag(t);
@@ -93,9 +116,17 @@ function dilTagToHtml(tag, attrStr) {
       if (a.weight) c.push('dil-weight-' + a.weight);
       return '<span class="' + c.join(' ') + '">';
     case 'title':
-      return '\n\n<h3 class="dil-title dil-title-' + (a.size || 'md') + '">';
+      return '\n\n<h3 class="dil-title dil-title-' + (a.size || 'md') + (/tabularNums/.test(attrStr) ? ' dil-tabular' : '') + '">';
+    case 'grid':
+      c = ['dil-grid', 'dil-cols-' + Math.min(Math.max(parseInt(a.columns, 10) || 2, 1), 4)];
+      if (a.gap) c.push('dil-gap-' + a.gap);
+      return '\n\n<div class="' + c.join(' ') + '">\n\n';
+    case 'grid-item':
+      return '\n\n<div class="dil-grid-item">\n\n';
+    case 'caption':
+      return '<span class="dil-caption">';
     case 'icon':
-      var svg = icon(a.name || '', a.size === 'lg' ? 22 : 18);
+      var svg = icon(a.name || '', a.size === 'xl' ? 24 : a.size === 'lg' ? 22 : a.size === 'sm' ? 16 : 18);
       return '<span class="dil-icon' + (a.color ? ' dil-icon-' + a.color : '') + '">' + (svg || '•') + '</span>';
     case 'divider':
       return '\n\n<hr class="dil-divider">\n\n';
@@ -114,8 +145,8 @@ function dilTagToHtml(tag, attrStr) {
 
 function dilCloseTag(tag) {
   switch (tag) {
-    case 'box': case 'header': return '\n\n</div>\n\n';
-    case 'row': case 'text': case 'badge': return '</span>';
+    case 'box': case 'header': case 'grid': case 'grid-item': return '\n\n</div>\n\n';
+    case 'row': case 'text': case 'badge': case 'caption': return '</span>';
     case 'title': return '</h3>\n\n';
     case 'list': return '\n\n</ul>\n\n';
     case 'list-item': return '</li>';
