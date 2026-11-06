@@ -1,10 +1,4 @@
 use serde::{Deserialize, Serialize};
-use std::sync::Mutex;
-
-pub struct AppState {
-    pub token: Mutex<Option<String>>,
-    pub cwd: String,
-}
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Message {
