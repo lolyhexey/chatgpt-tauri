@@ -62,24 +62,18 @@ pub struct ChatResponse {
     pub full_text: String,
 }
 
-async fn chat_with_tools(
-    client: &mut ChatGptClient,
-    initial_text: &str,
-    cwd: &str,
-    is_first: bool,
-    attachments: &[UploadedFile],
-) -> Result<ChatResponse, String> {
-    let message = if is_first {
-        format!("{}\n\n{}", tools::build_system_prompt(cwd), initial_text)
-    } else {
-        initial_text.to_string()
-    };
-
-    let events = client.send_message(&message, attachments).await?;
-    let full_text: String = events.iter().filter_map(|e| match e {
+fn reply_text(events: &[StreamEvent]) -> String {
+    events.iter().filter_map(|e| match e {
         StreamEvent::Text { delta } => Some(delta.as_str()),
         _ => None,
-    }).collect();
+    }).collect()
+}
+
+/// Goal mode only: runs local tools that ChatGPT requests with ```tool blocks.
+/// Normal chat never executes anything on this machine.
+async fn chat_with_tools(client: &mut ChatGptClient, message: &str, cwd: &str) -> Result<ChatResponse, String> {
+    let events = client.send_message(message, &[]).await?;
+    let full_text = reply_text(&events);
 
     let mut all_events = events;
     let mut all_tool_calls = Vec::new();
@@ -145,21 +139,19 @@ async fn chat_with_tools(
 #[tauri::command]
 async fn send_message(
     text: String,
-    is_first: bool,
     attachments: Option<Vec<UploadedFile>>,
     state: tauri::State<'_, AppState>,
 ) -> Result<ChatResponse, String> {
     let mut client = make_client(&state)?;
-    let cwd = state.cwd.clone();
-    let attachments = attachments.unwrap_or_default();
-    let response = chat_with_tools(&mut client, &text, &cwd, is_first, &attachments).await?;
+    let events = client.send_message(&text, &attachments.unwrap_or_default()).await?;
 
     if let Some(conv_id) = &client.conversation_id {
         *state.conversation_id.lock().unwrap() = Some(conv_id.clone());
     }
     *state.parent_message_id.lock().unwrap() = client.parent_message_id.clone();
 
-    Ok(response)
+    let full_text = reply_text(&events);
+    Ok(ChatResponse { events, tool_calls: Vec::new(), tool_results: Vec::new(), full_text })
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -191,7 +183,7 @@ async fn start_goal(
             format!("Goal not yet complete. Continue working on: \"{task}\"\n\nKeep going. When done and verified, end with: [GOAL_COMPLETE]")
         };
 
-        let response = chat_with_tools(&mut client, &prompt, &cwd, false, &[]).await?;
+        let response = chat_with_tools(&mut client, &prompt, &cwd).await?;
         total_calls += 1 + response.tool_calls.len() as u32;
         let is_complete = response.full_text.contains("[GOAL_COMPLETE]");
         responses.push(response);

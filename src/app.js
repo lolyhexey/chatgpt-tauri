@@ -20,7 +20,6 @@ const searchInput = $('sb-search-input');
 
 let currentConversationId = null;
 let sending = false;
-let isFirstMessage = true;
 let goalMode = false;
 
 hydrateIcons();
@@ -94,7 +93,6 @@ async function openConversation(id) {
     await invoke('set_conversation', { id: conv.id, parentId: conv.current_node });
     chat.loadConversation(conv.messages);
     setTitle(conv.title);
-    isFirstMessage = false;
     setStatus('Ready');
   } catch (e) {
     chat.clear();
@@ -118,7 +116,6 @@ async function deleteConversation(id) {
 function startNewChat() {
   if (sending) return;
   currentConversationId = null;
-  isFirstMessage = true;
   chat.clear();
   invoke('new_conversation');
   sidebar.setActive(null);
@@ -142,8 +139,7 @@ async function sendText(text, files = [], display = []) {
   chat.addUserMessage(text, display);
   chat.startPending();
   try {
-    const response = await invoke('send_message', { text, isFirst: isFirstMessage, attachments: files });
-    isFirstMessage = false;
+    const response = await invoke('send_message', { text, attachments: files });
     const fullText = response.full_text ||
       response.events.filter((e) => e.type === 'text').map((e) => e.delta).join('');
     chat.completePending(fullText, toolPairs(response));
@@ -166,7 +162,6 @@ async function startGoal(task) {
   chat.startPending();
   try {
     const result = await invoke('start_goal', { task });
-    isFirstMessage = false;
     notice.textContent = `${result.complete ? 'Goal complete' : 'Goal stopped'} · ${result.iterations} iterations · ${result.total_calls} API calls`;
     const last = result.responses[result.responses.length - 1];
     const text = last ? last.full_text.replace('[GOAL_COMPLETE]', '').trim() : '';
