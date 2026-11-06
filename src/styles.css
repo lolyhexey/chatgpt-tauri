@@ -370,4 +370,100 @@ body {
   51%, 100% { opacity: 0; }
 }
 
+.tool-block {
+  max-width: 768px;
+  margin: 4px auto;
+  padding: 0 24px;
+}
+
+.tool-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  background: rgba(16, 163, 127, 0.08);
+  border: 1px solid rgba(16, 163, 127, 0.2);
+  border-radius: 8px;
+  font-size: 13px;
+  cursor: pointer;
+  color: var(--accent);
+}
+.tool-header:hover { background: rgba(16, 163, 127, 0.12); }
+
+.tool-name { font-weight: 500; }
+.tool-icon { font-size: 14px; }
+
+.tool-content { margin-top: 4px; }
+.tool-content.collapsed { display: none; }
+
+.tool-args {
+  font-size: 12px;
+  color: var(--text-dim);
+  background: var(--code-bg);
+  padding: 8px 12px;
+  border-radius: 6px;
+  overflow-x: auto;
+  margin: 0;
+}
+
+.tool-result {
+  max-width: 768px;
+  margin: 4px auto 8px;
+  padding: 0 24px;
+}
+
+.tool-result pre {
+  font-size: 12px;
+  color: var(--text-secondary);
+  background: var(--code-bg);
+  padding: 8px 12px;
+  border-radius: 6px;
+  overflow-x: auto;
+  max-height: 300px;
+  margin: 0;
+}
+
+.tool-error pre { color: var(--error); }
+
+.agent-panel {
+  max-width: 768px;
+  margin: 8px auto;
+  padding: 12px 24px;
+  background: rgba(16, 163, 127, 0.05);
+  border: 1px solid rgba(16, 163, 127, 0.15);
+  border-radius: 12px;
+}
+
+.agent-header {
+  font-size: 14px;
+  font-weight: 500;
+  margin-bottom: 8px;
+  color: var(--accent);
+}
+
+.agent-row {
+  font-size: 13px;
+  padding: 4px 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.agent-done { color: #22c55e; }
+.agent-failed { color: var(--error); }
+.agent-running { color: var(--accent); animation: spin 1s linear infinite; }
+@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+.agent-time { color: var(--text-dim); font-size: 12px; margin-left: auto; }
+
+.goal-banner {
+  max-width: 768px;
+  margin: 8px auto;
+  padding: 10px 24px;
+  background: rgba(16, 163, 127, 0.1);
+  border-radius: 8px;
+  font-size: 13px;
+  color: var(--accent);
+  text-align: center;
+}
+
 .hidden { display: none !important; }
