@@ -319,6 +319,10 @@ button { font: inherit; color: inherit; }
 /* A reply still being written on another device: no copy/actions row until it's done */
 .turn-assistant:has(+ .remote-busy) .msg-actions { display: none; }
 
+/* Math (KaTeX, as on chatgpt.com: 1.21em, display blocks 16px apart, long ones scroll) */
+.math-display { overflow-x: auto; overflow-y: hidden; max-width: 100%; }
+.msg-assistant .katex { font-size: 1.21em; }
+
 /* Chat being fetched: spinner centred in the thread area, appears after 0.4 s like the web */
 .thread:has(> .thread-loading) { height: 100%; }
 .thread-loading {

@@ -34,13 +34,46 @@ function renderMarkdown(text, ctx) {
   _initMarked();
   if (!_markedReady) return escText(stripCites(text));
   try {
-    var html = marked.parse(transformMarkup(text, ctx));
+    var math = [];
+    var html = marked.parse(transformMarkup(extractMath(text, math), ctx));
     html = html.replace(/<table>/g, '<div class="table-wrap"><table>').replace(/<\/table>/g, '</table></div>');
-    return sanitizeHtml(linkifyFilePaths(html));
+    return restoreMath(sanitizeHtml(linkifyFilePaths(html)), math);
   } catch (e) {
     console.error('renderMarkdown failed', e);
     return escText(text);
   }
+}
+
+// Math as ChatGPT writes it: \[ … \] and $$ … $$ (display), \( … \) (inline); chatgpt.com
+// renders it with KaTeX. Markdown would eat the backslashes ("\[" -> "["), so each formula is
+// swapped for a plain token first and KaTeX's output goes in after sanitizing (KaTeX escapes
+// the TeX itself and builds its own markup). Code blocks and inline code are left alone.
+var MATH_RE = /\\\[([\s\S]+?)\\\]|\$\$([\s\S]+?)\$\$|\\\(([\s\S]+?)\\\)/g;
+
+function extractMath(text, store) {
+  return text.split(/(```[\s\S]*?(?:```|$)|~~~[\s\S]*?(?:~~~|$)|`[^`\n]*`)/).map(function (seg, i) {
+    if (i % 2 === 1) return seg;
+    return seg.replace(MATH_RE, function (m, a, b, c) {
+      var display = c === undefined;
+      store.push({ tex: display ? (a !== undefined ? a : b) : c, display: display });
+      return 'KXMATH' + (store.length - 1) + 'Z';
+    });
+  }).join('');
+}
+
+function restoreMath(html, store) {
+  if (!store.length) return html;
+  var render = function (n) {
+    var m = store[Number(n)];
+    if (!m) return '';
+    if (typeof katex === 'undefined') return escText(m.display ? '\\[' + m.tex + '\\]' : '\\(' + m.tex + '\\)');
+    var out = katex.renderToString(m.tex.trim(), { displayMode: m.display, throwOnError: false, strict: 'ignore', trust: false });
+    return m.display ? '<div class="math-display">' + out + '</div>' : out;
+  };
+  // A formula alone in its paragraph becomes the block itself.
+  return html
+    .replace(/<p>\s*KXMATH(\d+)Z\s*<\/p>/g, function (_, n) { return render(n); })
+    .replace(/KXMATH(\d+)Z/g, function (_, n) { return render(n); });
 }
 
 // Apply GenUI/DIL transforms only outside fenced code blocks.

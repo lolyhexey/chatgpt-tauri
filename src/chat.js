@@ -602,7 +602,8 @@ function streamSafe(text) {
   const lastLine = text.slice(text.lastIndexOf('\n') + 1);
   if (/^\s*\{/.test(lastLine) && lastLine.indexOf('}') < 0) text = text.slice(0, text.length - lastLine.length);
   let cut = text.length;
-  [['{#each', '{/each}'], ['{#if', '{/if}'], ['<radio-group', '</radio-group>'], ['<button', '</button>'], ['<textarea', '>']].forEach(([open, close]) => {
+  [['{#each', '{/each}'], ['{#if', '{/if}'], ['<radio-group', '</radio-group>'], ['<button', '</button>'], ['<textarea', '>'],
+    ['\\[', '\\]'], ['\\(', '\\)'], ['$$', '$$']].forEach(([open, close]) => {
     for (let start = text.indexOf(open); start >= 0; start = text.indexOf(open, start + open.length)) {
       if (text.indexOf(close, start + open.length) < 0) { cut = Math.min(cut, start); break; }
     }
