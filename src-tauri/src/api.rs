@@ -579,6 +579,41 @@ impl ChatGptClient {
         Ok((bytes.to_vec(), ctype))
     }
 
+    /// Start a voice-mode call: send the WebRTC offer and session settings to
+    /// /realtime/wm (as chatgpt.com does, checked live) and return the server's SDP answer.
+    /// Media then flows directly between the webview and OpenAI.
+    pub async fn voice_connect(&self, offer_sdp: &str, settings: &VoiceSettings) -> Result<String, String> {
+        if !offer_sdp.starts_with("v=0") || offer_sdp.len() > 64 * 1024 {
+            return Err("Bad voice offer.".into());
+        }
+        let session_id = Uuid::new_v4().to_string();
+        let session = voice_session_json(settings, &session_id);
+        let form = reqwest::multipart::Form::new()
+            .text("sdp", offer_sdp.to_string())
+            .text("session", session.to_string());
+        // The shared headers carry Content-Type: application/json; with it the server sees two
+        // content types and answers 400. Let the multipart body set its own.
+        let mut headers = self.headers();
+        headers.remove(reqwest::header::CONTENT_TYPE);
+        let resp = self
+            .client
+            .post(format!("{BASE_URL}/realtime/wm?dcid=0"))
+            .headers(headers)
+            .multipart(form)
+            .send()
+            .await
+            .map_err(|e| format!("Voice connect failed: {e}"))?;
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        if !status.is_success() {
+            return Err(format!("Voice connect failed (HTTP {status}): {}", truncate_chars(&body, 200)));
+        }
+        if !body.starts_with("v=0") {
+            return Err(format!("Voice connect: unexpected reply (HTTP {status})."));
+        }
+        Ok(body)
+    }
+
     /// Models for the composer's picker (same source chatgpt.com uses).
     pub async fn list_models(&self) -> Result<ModelList, String> {
         let url = format!("{BASE_URL}/backend-api/models?history_and_training_disabled=false");
@@ -823,6 +858,40 @@ fn apply_system_hints(body: &mut Value, picked: &[String], reasoning_effort: Opt
     if !hints.is_empty() {
         body["system_hints"] = json!(hints);
     }
+}
+
+/// What the UI chooses for a voice call; everything else in the session is fixed.
+#[derive(serde::Deserialize, Clone, Debug, Default)]
+pub struct VoiceSettings {
+    pub voice: Option<String>,
+    pub locale: Option<String>,
+    pub timezone: Option<String>,
+    pub timezone_offset_min: Option<i32>,
+}
+
+/// The "session" form field of /realtime/wm. These 12 keys are what chatgpt.com sent
+/// (captured live); the server accepted a call with exactly these.
+fn voice_session_json(s: &VoiceSettings, session_id: &str) -> Value {
+    let word = |v: &Option<String>, fallback: &str, max: usize| {
+        v.as_deref()
+            .filter(|x| !x.is_empty() && x.len() <= max && x.chars().all(|c| c.is_ascii_alphanumeric() || "-_/+".contains(c)))
+            .unwrap_or(fallback)
+            .to_string()
+    };
+    json!({
+        "requested_default_model": "",
+        "voice": word(&s.voice, "juniper", 32),
+        "voice_session_id": session_id,
+        "voice_status_request_id": session_id,
+        "timezone_offset_min": s.timezone_offset_min.unwrap_or(0).clamp(-900, 900),
+        "timezone": word(&s.timezone, "UTC", 64),
+        "user_locale": word(&s.locale, "en-US", 16),
+        "voice_mode": "wingman",
+        "model_slug": "",
+        "model_slug_advanced": "",
+        "client_tools": [],
+        "history_and_training_disabled": false
+    })
 }
 
 /// A model family for the picker: its plain slug (sent for Instant) and its thinking slug
@@ -1621,6 +1690,22 @@ mod tests {
         assert!(started.elapsed() < std::time::Duration::from_secs(5), "stopped promptly");
         assert_eq!(join_reply(&events).0, "partial", "text that arrived is kept");
         assert!(client.cancel.is_some(), "the stop switch is kept for the next round (Goal mode)");
+    }
+
+    #[test]
+    fn voice_session_matches_the_web() {
+        let s = VoiceSettings { voice: Some("juniper".into()), locale: Some("th-TH".into()), timezone: Some("Asia/Bangkok".into()), timezone_offset_min: Some(-420) };
+        let j = voice_session_json(&s, "id-1");
+        let mut keys: Vec<&str> = j.as_object().unwrap().keys().map(String::as_str).collect();
+        keys.sort();
+        assert_eq!(keys, ["client_tools", "history_and_training_disabled", "model_slug", "model_slug_advanced", "requested_default_model", "timezone", "timezone_offset_min", "user_locale", "voice", "voice_mode", "voice_session_id", "voice_status_request_id"]);
+        assert_eq!(j["voice_mode"], "wingman");
+        assert_eq!(j["timezone"], "Asia/Bangkok");
+        assert_eq!(j["voice_status_request_id"], "id-1");
+        let odd = VoiceSettings { voice: Some("x\"y".into()), timezone_offset_min: Some(99999), ..Default::default() };
+        let j = voice_session_json(&odd, "id-2");
+        assert_eq!(j["voice"], "juniper", "odd values fall back");
+        assert_eq!(j["timezone_offset_min"], 900);
     }
 
     #[test]

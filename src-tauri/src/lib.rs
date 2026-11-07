@@ -450,6 +450,13 @@ fn save_to_downloads(bytes: &[u8], ext: &str, name: &str) -> Result<String, Stri
     Ok(path.to_string_lossy().to_string())
 }
 
+/// Voice mode: trade the webview's WebRTC offer for the server's answer (needs the token,
+/// which the webview doesn't have).
+#[tauri::command]
+async fn voice_connect(sdp: String, settings: Option<api::VoiceSettings>, state: tauri::State<'_, AppState>) -> Result<String, String> {
+    make_client(&state)?.voice_connect(&sdp, &settings.unwrap_or_default()).await
+}
+
 /// Model families for the composer's model/effort picker.
 #[tauri::command]
 async fn models_cmd(state: tauri::State<'_, AppState>) -> Result<api::ModelList, String> {
@@ -575,6 +582,7 @@ pub fn run() {
             system_hints_cmd,
             models_cmd,
             stop_generation,
+            voice_connect,
             generated_image,
             save_generated_image,
         ])
