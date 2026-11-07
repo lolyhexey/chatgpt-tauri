@@ -9,7 +9,9 @@ const loginError = $('login-error');
 const chatInput = $('chat-input');
 const sendBtn = $('send-btn');
 const voiceBtn = $('voice-btn');
-const voiceBar = $('voice-bar');
+const voiceOrb = $('voice-orb');
+const voiceMuteBtn = $('voice-mute');
+let voiceActive = false;
 const plusBtn = $('plus-btn');
 const plusMenu = $('plus-menu');
 const fileInput = $('file-input');
@@ -107,6 +109,20 @@ function showLogin(message) {
 }
 
 function updateSendState() {
+  // During a voice call (like chatgpt.com): the Voice button becomes a blue ✕ that ends the
+  // call, with the microphone toggle beside it; Send is hidden.
+  const voiceMode = voiceActive ? 'end' : 'start';
+  if (voiceBtn.dataset.mode !== voiceMode) {
+    voiceBtn.dataset.mode = voiceMode;
+    voiceBtn.innerHTML = icon(voiceActive ? 'x' : 'audio-lines', 18);
+    voiceBtn.title = voiceActive ? 'End Voice' : 'Start voice mode';
+  }
+  voiceMuteBtn.hidden = !voiceActive;
+  if (voiceActive) {
+    voiceBtn.hidden = false;
+    sendBtn.hidden = true;
+    return;
+  }
   // While the chat you're looking at is replying, the send button is a Stop button (like the web).
   const stoppable = !!(view && view.running);
   const mode = stoppable ? 'stop' : 'send';
@@ -350,6 +366,8 @@ function stripGoalMarker(text) {
 
 function submitComposer() {
   let text = chatInput.value;
+  // Typing during a call is allowed (as on the web) but sending isn't supported yet.
+  if (voiceActive) { setStatus('Sending text during a voice call isn’t supported yet'); return; }
   if (sendBtn.disabled) return;
   if (attachments.hasErrors()) {
     setStatus('Remove the files that failed to upload first');
@@ -393,44 +411,50 @@ function renderPlusTools() {
 
 // ---------- Voice mode ----------
 
+// Like chatgpt.com: the chat page stays, the transcript appears as normal chat messages, a
+// large blue orb floats above the box (pulsing with ChatGPT's voice), and the box keeps its
+// "Type" field, mic toggle and blue ✕.
+let voiceView = null;
 const voiceUi = {
   open() {
-    $('voice-transcript').innerHTML = '';
-    voiceBar.hidden = false;
-    composerEl.hidden = true;
+    voiceActive = true;
+    voiceView = view;
+    voiceView.chat.voiceTurns = [];
+    voiceOrb.hidden = false;
+    voiceOrb.style.setProperty('--level', 0);
+    composerEl.classList.add('voice-on');
+    mainEl.classList.add('voice-on');
+    chatInput.placeholder = 'Type';
     this.muted(false);
+    updateSendState();
   },
   close() {
-    voiceBar.hidden = true;
-    composerEl.hidden = false;
+    voiceActive = false;
+    voiceOrb.hidden = true;
+    composerEl.classList.remove('voice-on');
+    mainEl.classList.remove('voice-on');
+    chatInput.placeholder = goalMode ? 'Describe the goal to work on…' : 'Ask ChatGPT';
+    updateSendState();
     chatInput.focus();
   },
   status(text) {
-    $('voice-status').textContent = text;
-    voiceBar.dataset.state = String(text).toLowerCase();
+    setStatus(text);
+    voiceOrb.dataset.state = String(text).toLowerCase();
   },
-  // The last few turns, live (like the captions on chatgpt.com).
   transcript(lines) {
-    const box = $('voice-transcript');
-    box.innerHTML = '';
-    lines.slice(-4).forEach((l) => {
-      const row = document.createElement('div');
-      row.className = 'voice-line ' + l.role;
-      row.textContent = l.text;
-      box.appendChild(row);
-    });
-    box.scrollTop = box.scrollHeight;
+    if (voiceView) voiceView.chat.setVoiceTurns(lines);
   },
+  level(v) { voiceOrb.style.setProperty('--level', v.toFixed(3)); },
   muted(on) {
-    const b = $('voice-mute');
-    b.innerHTML = icon(on ? 'mic-off' : 'mic', 18);
-    b.classList.toggle('off', on);
-    b.title = on ? 'Unmute microphone' : 'Mute microphone';
+    voiceMuteBtn.innerHTML = icon(on ? 'mic-off' : 'mic', 18);
+    voiceMuteBtn.classList.toggle('off', on);
+    voiceMuteBtn.title = on ? 'Turn on microphone' : 'Turn off microphone';
   },
   error(message) { setStatus(message); },
 };
 
-// After hanging up, open the voice chat (the server saved its transcript).
+// After hanging up, open the voice chat as saved by the server (so the next typed message
+// continues it).
 const voiceCall = new VoiceCall(voiceUi, {
   onEnd: async (convId, failed) => {
     if (failed) setTimeout(() => voiceUi.close(), 2500);
@@ -444,8 +468,11 @@ const voiceCall = new VoiceCall(voiceUi, {
 });
 
 voiceBtn.addEventListener('click', () => {
-  if (sending || voiceCall.active) return;
-  setStatus('Voice');
+  if (voiceCall.active) { voiceCall.end(false); return; }
+  if (sending) return;
+  // A voice call is its own new chat (as on the web, which starts it from an empty chat).
+  if (view.running || view.convId || view.el.childElementCount) startNewChat();
+  setStatus('Connecting…');
   voiceCall.start({
     voice: 'juniper',
     locale: navigator.language || 'en-US',
@@ -453,8 +480,7 @@ voiceBtn.addEventListener('click', () => {
     timezoneOffsetMin: new Date().getTimezoneOffset(),
   });
 });
-$('voice-end').addEventListener('click', () => voiceCall.end(false));
-$('voice-mute').addEventListener('click', () => voiceCall.toggleMute());
+voiceMuteBtn.addEventListener('click', () => voiceCall.toggleMute());
 
 function loadComposerMenus() {
   mentions.load().then(renderPlusTools);

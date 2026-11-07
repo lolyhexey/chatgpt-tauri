@@ -77,6 +77,31 @@ class Chat {
     });
   }
 
+  // Voice mode, like chatgpt.com: each transcript turn is a normal chat message (user bubble on
+  // the right, assistant text on the left), updated live as the transcript grows.
+  setVoiceTurns(lines) {
+    if (!this.voiceTurns) this.voiceTurns = [];
+    const nearBottom = this._isNearBottom();
+    lines.forEach((line, i) => {
+      let t = this.voiceTurns[i];
+      if (!t || t.role !== line.role) {
+        if (t) t.el.remove();
+        const el = document.createElement('div');
+        el.className = 'turn ' + (line.role === 'user' ? 'turn-user' : 'turn-assistant');
+        el.innerHTML = line.role === 'user' ? '<div class="bubble"></div>' : '<div class="msg-assistant"></div>';
+        this.thread.appendChild(el);
+        t = this.voiceTurns[i] = { role: line.role, el, text: null };
+      }
+      if (t.text === line.text) return;
+      t.text = line.text;
+      const box = t.el.firstChild;
+      if (line.role === 'user') box.textContent = line.text;
+      else box.innerHTML = renderMarkdown(line.text);
+    });
+    this._updateEmpty();
+    if (nearBottom) this._scrollToBottom();
+  }
+
   // Text so far in the current reply (used by Goal mode to close a round).
   currentText() {
     return this.stream ? this.stream.target : '';

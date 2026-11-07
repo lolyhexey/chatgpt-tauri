@@ -101,6 +101,7 @@ class VoiceCall {
         this.audio = new Audio();
         this.audio.srcObject = e.streams[0];
         this.audio.play().catch((err) => console.warn('voice audio', err));
+        this._watchLevel(e.streams[0]);
       };
       pc.onconnectionstatechange = () => {
         if (pc.connectionState === 'connected') this.ui.status('Listening');
@@ -137,6 +138,26 @@ class VoiceCall {
     }
   }
 
+  // How loud ChatGPT is speaking (0..1), so the orb can pulse with its voice like on the web.
+  _watchLevel(stream) {
+    try {
+      this.levelCtx = new AudioContext();
+      const analyser = this.levelCtx.createAnalyser();
+      analyser.fftSize = 512;
+      this.levelCtx.createMediaStreamSource(stream).connect(analyser);
+      const buf = new Uint8Array(analyser.fftSize);
+      const tick = () => {
+        if (!this.active) return;
+        analyser.getByteTimeDomainData(buf);
+        let sum = 0;
+        for (let i = 0; i < buf.length; i++) { const v = (buf[i] - 128) / 128; sum += v * v; }
+        this.ui.level(Math.min(1, Math.sqrt(sum / buf.length) * 4));
+        this._levelFrame = requestAnimationFrame(tick);
+      };
+      tick();
+    } catch (e) { console.warn('voice level', e); }
+  }
+
   toggleMute() {
     if (!this.mic) return;
     this.muted = !this.muted;
@@ -157,7 +178,9 @@ class VoiceCall {
     try { if (this.pc) this.pc.close(); } catch (e) { /* already closed */ }
     if (this.mic) this.mic.getTracks().forEach((t) => t.stop());
     if (this.audio) { this.audio.pause(); this.audio.srcObject = null; }
-    this.pc = null; this.mic = null; this.audio = null;
+    if (this._levelFrame) cancelAnimationFrame(this._levelFrame);
+    if (this.levelCtx) this.levelCtx.close().catch(() => {});
+    this.pc = null; this.mic = null; this.audio = null; this.levelCtx = null;
     if (!failed) this.ui.close();
     this.onEnd(this.convId, !!failed);
   }
