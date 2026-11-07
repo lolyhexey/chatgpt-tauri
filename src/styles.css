@@ -849,6 +849,30 @@ button { font: inherit; color: inherit; }
 }
 @keyframes shimmer { from { background-position: 100% 0; } to { background-position: -100% 0; } }
 
+/* Citation chips (chatgpt.com style): source name, "+N" for more sources */
+.cite-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin: 0 2px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: #2f2f2f;
+  color: #cdcdcd !important;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 18px;
+  vertical-align: 1px;
+  text-decoration: none !important;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.cite-chip:hover { background: #424242; color: #fff !important; }
+.cite-more { opacity: 0.7; }
+
+/* Icons inside button labels */
+.gx-button .dil-icon, .dil-button .dil-icon { display: inline-flex; vertical-align: -3px; margin-left: 6px; }
+
 /* Activity: what ChatGPT is doing (search, code, connectors, thinking) */
 .activity { margin: 0 0 12px; font-size: 14px; color: var(--text-secondary, #afafaf); }
 .activity-head {

@@ -471,11 +471,21 @@ impl ChatGptClient {
             }
             chain.reverse();
 
+            // Search results gathered since the last user message, for the reply that cites them.
+            let mut turn_sources: Vec<Source> = Vec::new();
             for nid in &chain {
                 if let Some(node) = map.get(nid.as_str()) {
                     let msg = &node["message"];
                     let role = msg["author"]["role"].as_str().unwrap_or("");
-                    if role != "user" && role != "assistant" {
+                    for s in search_sources(msg) {
+                        if !turn_sources.iter().any(|t| t.id == s.id) {
+                            turn_sources.push(s);
+                        }
+                    }
+                    if role == "user" {
+                        turn_sources.clear();
+                    }
+                    if role != "user" && !is_user_visible(msg) {
                         continue;
                     }
                     let parts = msg["content"]["parts"]
@@ -504,6 +514,7 @@ impl ChatGptClient {
                             role: role.to_string(),
                             content: parts,
                             attachments,
+                            sources: if role == "assistant" { turn_sources.clone() } else { Vec::new() },
                         });
                     }
                 }
@@ -680,6 +691,34 @@ pub fn parse_sse_line(line: &str) -> Option<(String, Value)> {
     Some((msg_id, data))
 }
 
+/// Search results carried by a message, with the ids replies use to cite them.
+fn search_sources(msg: &Value) -> Vec<Source> {
+    let groups = msg.pointer("/metadata/search_result_groups").and_then(|g| g.as_array());
+    let Some(groups) = groups else { return Vec::new() };
+    let mut out = Vec::new();
+    for group in groups {
+        let domain = group["domain"].as_str().unwrap_or("");
+        for e in group["entries"].as_array().into_iter().flatten() {
+            let r = &e["ref_id"];
+            let (Some(turn), Some(kind), Some(index)) = (r["turn_index"].as_u64(), r["ref_type"].as_str(), r["ref_index"].as_u64()) else {
+                continue;
+            };
+            let url = e["url"].as_str().unwrap_or("");
+            if !(url.starts_with("https://") || url.starts_with("http://")) {
+                continue;
+            }
+            let attribution = e["attribution"].as_str().filter(|a| !a.is_empty()).unwrap_or(domain);
+            out.push(Source {
+                id: format!("turn{turn}{kind}{index}"),
+                url: url.to_string(),
+                title: truncate_chars(e["title"].as_str().unwrap_or(""), 200),
+                attribution: attribution.to_string(),
+            });
+        }
+    }
+    out
+}
+
 fn truncate_chars(s: &str, max: usize) -> String {
     match s.char_indices().nth(max) {
         Some((i, _)) => format!("{}…", &s[..i]),
@@ -828,12 +867,13 @@ impl SseParser {
         }
         // Tool calls, tool output and thinking are shown as progress steps, never as reply text.
         if let Some((kind, title, detail, tool)) = activity_step(msg) {
-            let sig = format!("{kind}\u{1}{title}\u{1}{detail}\u{1}{tool}");
+            let sources = search_sources(msg);
+            let sig = format!("{kind}\u{1}{title}\u{1}{detail}\u{1}{tool}\u{1}{}", sources.len());
             if self.step_sigs.get(&msg_id) == Some(&sig) {
                 return None;
             }
             self.step_sigs.insert(msg_id.clone(), sig);
-            return Some(StreamEvent::Step { id: msg_id, kind, title, detail, tool });
+            return Some(StreamEvent::Step { id: msg_id, kind, title, detail, tool, sources });
         }
         if !is_user_visible(msg) {
             return None;
@@ -943,6 +983,22 @@ mod tests {
         ]);
         let text: String = events.iter().filter_map(|e| match e { StreamEvent::Text { delta } => Some(delta.as_str()), _ => None }).collect();
         assert_eq!(text, "ECU คือ");
+    }
+
+    #[test]
+    fn search_sources_use_cite_ids() {
+        let msg: Value = serde_json::from_str(r#"{"metadata":{"search_result_groups":[
+            {"domain":"x.com","entries":[
+                {"url":"https://help.x.com/a","title":"Help","attribution":"x.com","ref_id":{"turn_index":640725,"ref_type":"search","ref_index":12}},
+                {"url":"javascript:alert(1)","title":"bad","ref_id":{"turn_index":640725,"ref_type":"search","ref_index":13}},
+                {"url":"https://y.org/b","title":"","ref_id":{"turn_index":640725,"ref_type":"search","ref_index":5}}
+            ]}]}}"#).unwrap();
+        let sources = search_sources(&msg);
+        assert_eq!(sources.len(), 2, "non-http urls are dropped");
+        assert_eq!(sources[0].id, "turn640725search12");
+        assert_eq!(sources[0].attribution, "x.com");
+        assert_eq!(sources[1].id, "turn640725search5");
+        assert_eq!(sources[1].attribution, "x.com", "falls back to the group domain");
     }
 
     #[test]

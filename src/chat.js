@@ -17,7 +17,7 @@ class Chat {
     this.pending = null;
     for (const msg of messages) {
       if (msg.role === 'user') this._userTurn(msg.content, msg.attachments || []);
-      else this._fillAssistant(this._newAssistantTurn(), msg.content);
+      else this._fillAssistant(this._newAssistantTurn(), msg.content, new Map((msg.sources || []).map((s) => [s.id, s])));
     }
     this._updateEmpty();
     this._scrollToBottom();
@@ -32,6 +32,7 @@ class Chat {
   startPending() {
     this._stopStream();
     this.activity = null;
+    this.sources = new Map();
     this.pending = this._newAssistantTurn();
     this.pending.innerHTML = '<div class="typing" aria-label="Thinking"></div>';
     this._scrollToBottom();
@@ -68,6 +69,7 @@ class Chat {
   // What ChatGPT is doing right now (searching, running code, calling a connector,
   // thinking). The header shows the latest step; clicking it lists every step.
   _step(ev) {
+    (ev.sources || []).forEach((s) => this.sources.set(s.id, s));
     const a = this._ensureActivity();
     a.el.classList.add('running');
     if (ev.kind === 'recap') {
@@ -169,7 +171,7 @@ class Chat {
     }
     s.shown = Math.min(next, s.target.length);
     const nearBottom = this._isNearBottom();
-    s.body.innerHTML = renderMarkdown(streamSafe(s.target.slice(0, s.shown)));
+    s.body.innerHTML = renderMarkdown(streamSafe(s.target.slice(0, s.shown)), this.sources);
     if (nearBottom) this._scrollToBottom();
     if (s.shown < s.target.length) s.frame = requestAnimationFrame(() => this._revealStep());
   }
@@ -190,7 +192,7 @@ class Chat {
     this.pending = null;
     const activity = this._takeActivity();
     const nearBottom = this._isNearBottom();
-    this._fillAssistant(turn, text);
+    this._fillAssistant(turn, text, this.sources);
     if (activity) turn.insertBefore(activity, turn.firstChild);
     if (nearBottom) this._scrollToBottom();
   }
@@ -271,13 +273,13 @@ class Chat {
     return turn;
   }
 
-  _fillAssistant(turn, text) {
+  _fillAssistant(turn, text, sources) {
     turn.innerHTML = '';
     if (!text) return;
     turn._raw = text;
     const body = document.createElement('div');
     body.className = 'msg-assistant';
-    body.innerHTML = renderMarkdown(text);
+    body.innerHTML = renderMarkdown(text, sources);
     const actions = document.createElement('div');
     actions.className = 'msg-actions';
     actions.innerHTML = '<button type="button" class="act-btn" data-action="copy-msg" title="Copy">' + icon('copy', 18) + '</button>';
@@ -338,7 +340,7 @@ document.addEventListener('click', (e) => {
   const btn = e.target.closest && e.target.closest('[data-action="copy-msg"]');
   if (!btn) return;
   const turn = btn.closest('.turn');
-  const raw = turn._raw || '';
+  const raw = stripCites(turn._raw || '');
   // GenUI/DIL markup is not useful outside the app; copy the rendered text instead.
   const text = /<(box|row|radio-group|text)\b|DIL\.|GenUI\./.test(raw)
     ? turn.querySelector('.msg-assistant').innerText

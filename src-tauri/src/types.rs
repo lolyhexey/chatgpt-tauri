@@ -7,6 +7,18 @@ pub struct Message {
     pub content: String,
     #[serde(default)]
     pub attachments: Vec<AttachmentInfo>,
+    /// Web search results this reply can cite with <Cite refs={["turn…search…"]}/>.
+    #[serde(default)]
+    pub sources: Vec<Source>,
+}
+
+/// One web search result, keyed the way replies cite it: "turn{turn_index}{ref_type}{ref_index}".
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct Source {
+    pub id: String,
+    pub url: String,
+    pub title: String,
+    pub attribution: String,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -72,6 +84,8 @@ pub enum StreamEvent {
         title: String,
         detail: String,
         tool: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        sources: Vec<Source>,
     },
     #[serde(rename = "done")]
     Done {

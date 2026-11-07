@@ -27,12 +27,13 @@ function _initMarked() {
   marked.setOptions({ renderer: renderer, gfm: true, breaks: true });
 }
 
-function renderMarkdown(text) {
+// sources: optional Map of citation id -> {url, title, attribution} for <Cite refs> chips.
+function renderMarkdown(text, sources) {
   if (!text) return '';
   _initMarked();
-  if (!_markedReady) return escText(text);
+  if (!_markedReady) return escText(stripCites(text));
   try {
-    var html = marked.parse(transformMarkup(text));
+    var html = marked.parse(transformMarkup(text, sources));
     html = html.replace(/<table>/g, '<div class="table-wrap"><table>').replace(/<\/table>/g, '</table></div>');
     return sanitizeHtml(linkifyFilePaths(html));
   } catch (e) {
@@ -42,14 +43,77 @@ function renderMarkdown(text) {
 }
 
 // Apply GenUI/DIL transforms only outside fenced code blocks.
-function transformMarkup(text) {
+function transformMarkup(text, sources) {
   return text.split(/(```[\s\S]*?(?:```|$)|~~~[\s\S]*?(?:~~~|$))/).map(function (seg, i) {
     if (i % 2 === 1) return seg;
+    seg = transformCites(seg, sources);
     seg = collapseRows(dedentDilBlocks(seg));
     seg = transformDil(transformGenUI(seg));
     // Indented HTML lines would otherwise become markdown code blocks.
     return seg.replace(/^[ \t]+(?=<)/gm, '');
   }).join('');
+}
+
+// Citations: <Cite refs={["turn1search5",...]}/> (current) or citeidid (older replies).
+var CITE_TAG = /<Cite\s+refs=\{(\[[^\]]*\])\}\s*\/?>/g;
+var CITE_PUA = /cite([^]*)/g;
+
+function citeIds(list) {
+  try {
+    var ids = JSON.parse(list);
+    if (Array.isArray(ids)) return ids.map(String);
+  } catch (e) {}
+  return list.match(/[\w-]+/g) || [];
+}
+
+function citeChip(ids, sources) {
+  var found = [];
+  ids.forEach(function (id) {
+    var s = sources && sources.get(id);
+    if (s && found.indexOf(s) < 0) found.push(s);
+  });
+  // A citation whose source we don't have is dropped rather than shown as raw markup.
+  if (!found.length) return '';
+  var first = found[0];
+  var name = first.attribution || first.url.replace(/^https?:\/\/(www\.)?/, '').split('/')[0];
+  // One line per source. Titles can contain blank lines (PDFs), and a raw blank line inside an
+  // attribute ends the markdown paragraph and breaks the tag, so collapse and encode them.
+  var tip = found.map(function (s) {
+    var title = (s.title || '').replace(/\s+/g, ' ').trim();
+    return (title ? title + ' — ' : '') + s.url.replace(/^https?:\/\//, '').split('?')[0];
+  }).join('\n');
+  return '<a class="cite-chip" href="' + escAttr(first.url) + '" title="' + escAttr(tip).replace(/\n/g, '&#10;') + '">' + escText(name) +
+    (found.length > 1 ? '<span class="cite-more">+' + (found.length - 1) + '</span>' : '') + '</a>';
+}
+
+function transformCites(seg, sources) {
+  return seg
+    .replace(CITE_TAG, function (_, list) { return citeChip(citeIds(list), sources); })
+    .replace(CITE_PUA, function (_, list) { return citeChip(list.split('').filter(Boolean), sources); })
+    .replace(/<([A-Z][A-Za-z]+)\b([^<>]*?)\/>/g, function (_, tag, attrs) { return componentTag(tag, parseDilAttrs(attrs)); });
+}
+
+// chatgpt.com's other inline components. AsyncImage needs ChatGPT's server-side image search,
+// which this app can't call, so it is dropped like any unknown component (never shown raw).
+function componentTag(tag, a) {
+  switch (tag) {
+    case 'Link':
+      if (!/^https?:\/\//i.test(a.url || '')) return escText(a.title || '');
+      return '<a href="' + escAttr(a.url) + '">' + escText(a.title || a.url) + '</a>';
+    case 'Entity':
+      return '<span class="entity"' + (a.disambig ? ' title="' + escAttr(a.disambig.replace(/\s+/g, ' ')) + '"' : '') + '>' +
+        escText(a.value || '') + '</span>';
+    default:
+      return '';
+  }
+}
+
+// Plain-text form for copying: citations dropped, Link/Entity reduced to their text.
+function stripCites(text) {
+  return text.replace(CITE_TAG, '').replace(CITE_PUA, '').replace(/<([A-Z][A-Za-z]+)\b([^<>]*?)\/>/g, function (_, tag, attrs) {
+    var a = parseDilAttrs(attrs);
+    return tag === 'Link' ? (a.title || a.url || '') : tag === 'Entity' ? (a.value || '') : '';
+  });
 }
 
 var DIL_CONTAINER_OPEN = /<(box|grid-item|grid|row|radio-group)(\s[^>]*[^\/]|)>/g;

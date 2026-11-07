@@ -321,6 +321,15 @@ function transformInputs(text, state) {
   });
 }
 
+// Button text may contain <icon .../>: render icons, drop any other tags, escape the rest.
+function buttonLabel(label) {
+  return label.split(/(<icon\b[^>]*>)/i).map(function (part, i) {
+    if (i % 2 === 0) return escText(part.replace(/<\/?[A-Za-z][^>]*>/g, ''));
+    var m = part.match(/^<icon\b([^>]*?)\/?>$/i);
+    return m ? dilTagToHtml('icon', m[1].trim()) : '';
+  }).join('');
+}
+
 function transformButtons(text) {
   var out = '', i = 0;
   for (;;) {
@@ -341,9 +350,9 @@ function transformButtons(text) {
       var disabledExpr = attrExpr(attrs, 'disabled');
       out += '<button type="button" class="gx-button' + (/(^|\s)block(\s|=|\/|$)/.test(attrs) ? ' gx-block' : '') +
         '" data-gx-submit="1" data-gx-turn="' + escAttr(turnExpr) + '"' +
-        (disabledExpr ? ' data-gx-disabled="' + escAttr(disabledExpr) + '"' : '') + '>' + escText(label) + '</button>';
+        (disabledExpr ? ' data-gx-disabled="' + escAttr(disabledExpr) + '"' : '') + '>' + buttonLabel(label) + '</button>';
     } else {
-      out += '<span class="dil-button">' + escText(label) + '</span>';
+      out += '<span class="dil-button">' + buttonLabel(label) + '</span>';
     }
     i = close + 9;
   }
