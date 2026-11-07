@@ -86,7 +86,8 @@ pub struct ConversationSummary {
     pub id: String,
     pub title: String,
     pub model: String,
-    pub updated: Option<f64>,
+    /// update_time as the server sent it (an ISO string in the list, a number elsewhere).
+    pub updated: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]

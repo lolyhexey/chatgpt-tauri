@@ -504,7 +504,7 @@ impl ChatGptClient {
                             .or_else(|| c["current_node_model_slug"].as_str())
                             .unwrap_or("")
                             .to_string(),
-                        updated: c["update_time"].as_f64(),
+                        updated: time_key(&c["update_time"]),
                     })
                     .collect()
             })
@@ -1587,9 +1587,28 @@ fn parse_sse_stream(text: &str, client: &mut ChatGptClient) -> Vec<StreamEvent> 
     events
 }
 
+/// A chat's update_time as a comparable key: the list sends an ISO string, other endpoints a
+/// number of seconds. Missing or other types give None.
+fn time_key(v: &Value) -> Option<String> {
+    match v {
+        Value::String(s) if !s.is_empty() => Some(s.clone()),
+        Value::Number(n) => Some(n.to_string()),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn time_key_reads_string_and_number_update_times() {
+        assert_eq!(time_key(&json!("2026-11-08T01:02:03.456789Z")).as_deref(), Some("2026-11-08T01:02:03.456789Z"));
+        assert_eq!(time_key(&json!(1762563723.5)).as_deref(), Some("1762563723.5"));
+        assert_eq!(time_key(&json!(null)), None);
+        assert_eq!(time_key(&json!("")), None);
+        assert_ne!(time_key(&json!("2026-11-08T01:02:03Z")), time_key(&json!("2026-11-08T01:05:00Z")));
+    }
 
     #[test]
     fn parse_sse_line_extracts_text() {

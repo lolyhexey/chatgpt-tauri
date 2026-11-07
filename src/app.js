@@ -196,18 +196,26 @@ async function openConversation(id) {
     setStatus(sending ? 'Thinking…' : 'Ready');
     return;
   }
-  if (view.convId === id && !view.running && view.el.childElementCount) return;
+  // Already open (or still loading): just make sure it's current.
+  if (view.convId === id && !view.running && view.el.childElementCount) { refreshOpenChat(view); return; }
   const v = makeView(id);
   showView(v);
+  // A copy from earlier shows at once; the server is asked anyway, since the chat may have
+  // been continued elsewhere (e.g. on chatgpt.com).
   const cached = convCache.get(id);
-  const fresh = cached && cached.updated === sidebar.updatedOf(id);
-  if (!fresh) {
-    setStatus('Loading…');
-    v.chat.showLoading();
+  if (cached) {
+    v.parentId = cached.current_node;
+    v.chat.loadConversation(cached.messages);
+    setTitle(cached.title);
+    setStatus(sending ? 'Thinking…' : 'Ready');
+    refreshOpenChat(v);
+    return;
   }
+  setStatus('Loading…');
+  v.chat.showLoading();
   try {
-    const conv = fresh ? cached.conv : await invoke('get_conversation_cmd', { id });
-    if (!fresh) convCache.set(id, { conv, updated: sidebar.updatedOf(id) });
+    const conv = await invoke('get_conversation_cmd', { id });
+    convCache.set(id, conv);
     v.parentId = conv.current_node;
     v.chat.loadConversation(conv.messages);
     if (v === view) {
@@ -221,6 +229,37 @@ async function openConversation(id) {
     handleAuthError(e);
   }
 }
+
+// Fetch an open chat again and redraw it only if it moved on (new messages from another client,
+// e.g. chatgpt.com). Skipped while a reply or voice call runs there, or if this app changed the
+// chat while the request was out.
+async function refreshOpenChat(v) {
+  if (!v.convId || v.running || v.refreshing || v.el.querySelector('.thread-loading')) return;
+  v.refreshing = true;
+  const before = v.parentId;
+  try {
+    const conv = await invoke('get_conversation_cmd', { id: v.convId });
+    if (v.running || v.parentId !== before || (voiceActive && v === view)) return;
+    convCache.set(v.convId, conv);
+    if (conv.current_node === before) return;
+    v.parentId = conv.current_node;
+    v.chat.loadConversation(conv.messages);
+    if (v === view) setTitle(conv.title);
+  } catch (e) {
+    console.warn('chat refresh failed', e);
+  } finally {
+    v.refreshing = false;
+  }
+}
+
+// Back from the browser (or another window): pick up chats continued there.
+let lastFocusRefresh = 0;
+window.addEventListener('focus', () => {
+  if (Date.now() - lastFocusRefresh < 3000) return;
+  lastFocusRefresh = Date.now();
+  sidebar.refresh().then(() => sidebar.setActive(view.convId));
+  refreshOpenChat(view);
+});
 
 async function deleteConversation(id) {
   try {
