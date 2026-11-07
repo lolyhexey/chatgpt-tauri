@@ -95,6 +95,9 @@ function siteName(s) {
   if (s.name) return s.name;
   var host = (s.attribution || s.url.replace(/^https?:\/\//, '').split(/[\/?#]/)[0]).replace(/^www\./, '');
   var label = host.split('.')[0] || host;
+  // A page title like "GitHub - 7723mod/NPatch" carries the site's own spelling of its name.
+  var m = /^(.{2,30}?)\s+[-|–—:]\s/.exec(s.title || '');
+  if (m && m[1].toLowerCase().replace(/\s+/g, '') === label.toLowerCase()) return m[1];
   return label.charAt(0).toUpperCase() + label.slice(1);
 }
 
@@ -108,10 +111,15 @@ function transformCites(seg, ctx) {
 // chatgpt.com's other components. Unknown ones are dropped, never shown raw.
 function componentTag(tag, a, ctx) {
   switch (tag) {
-    case 'Link':
-      if (!/^https?:\/\//i.test(a.url || '')) return escText(a.title || '');
-      return '<a class="dil-link" href="' + escAttr(a.url) + '"><span class="dil-link-text">' + escText(a.title || a.url) + '</span>' +
+    case 'Link': {
+      // <Link url="…"/> or <Link ref="turn…view0"/>, a page from this reply's search results.
+      var src = a.ref && ctx.sources ? ctx.sources.get(a.ref) : null;
+      var url = a.url || (src && src.url) || '';
+      var label = a.title || (src && src.title) || url;
+      if (!/^https?:\/\//i.test(url)) return escText(label);
+      return '<a class="dil-link" href="' + escAttr(url) + '"><span class="dil-link-text">' + escText(label) + '</span>' +
         icon('arrow-up-right', 14) + '</a>';
+    }
     case 'Entity':
       return '<span class="entity"' + (a.disambig ? ' title="' + escAttr(a.disambig.replace(/\s+/g, ' ')) + '"' : '') + '>' +
         escText(a.value || '') + '</span>';

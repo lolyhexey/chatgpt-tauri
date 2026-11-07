@@ -414,22 +414,18 @@ button { font: inherit; color: inherit; }
 .hljs-strong { font-weight: 600; }
 
 /* Tables */
-.table-wrap {
-  margin: 16px 0;
-  overflow-x: auto;
-  border: 1px solid var(--border);
-  border-radius: 12px;
-}
+/* Measured on chatgpt.com: no outer frame, rows divided by a faint 1px line,
+   14px cells with 8px vertical padding and no left inset. */
+.table-wrap { margin: 16px 0; overflow-x: auto; }
 .table-wrap table { width: 100%; border-collapse: collapse; font-size: 14px; line-height: 22px; }
+.table-wrap tr { border-bottom: 1px solid rgba(255, 255, 255, 0.05); }
 .table-wrap th {
-  padding: 10px 14px;
+  padding: 8px 16px 8px 0;
   text-align: left;
   font-weight: 600;
-  border-bottom: 1px solid var(--border-strong);
   white-space: nowrap;
 }
-.table-wrap td { padding: 10px 14px; border-bottom: 1px solid var(--border); vertical-align: top; }
-.table-wrap tr:last-child td { border-bottom: 0; }
+.table-wrap td { padding: 8px 16px 8px 0; vertical-align: top; }
 
 /* ---------- Composer ---------- */
 .composer-wrap { padding: 0 24px 16px; flex-shrink: 0; }
@@ -736,6 +732,8 @@ button { font: inherit; color: inherit; }
 .dil-gap-1 { gap: 4px; } .dil-gap-2 { gap: 8px; } .dil-gap-3 { gap: 12px; } .dil-gap-4 { gap: 16px; }
 .dil-r-sm { border-radius: 6px; } .dil-r-md { border-radius: 8px; } .dil-r-lg { border-radius: 12px; }
 .dil-align-center { align-items: center; text-align: center; }
+/* In a row, align is the cross (vertical) axis only; text stays left like chatgpt.com. */
+.dil-dir-row.dil-align-center { text-align: start; }
 .dil-align-start { align-items: flex-start; }
 .dil-justify-center { justify-content: center; }
 
@@ -970,6 +968,8 @@ button { font: inherit; color: inherit; }
   text-underline-offset: 2px;
 }
 .msg-assistant a.dil-link:hover .dil-link-text { text-decoration-color: currentColor; }
+/* chatgpt.com: an entity in bold text (a card name) has no dotted underline; in a title it does. */
+strong .entity, b .entity { text-decoration: none; }
 
 /* <AsyncImage/>: rounded frame on #212121; sizes come from the tag (hydrateMedia) */
 .gen-img { position: relative; overflow: hidden; border-radius: 16px; background: #212121; flex: none; max-width: 100%; margin: 0; }
