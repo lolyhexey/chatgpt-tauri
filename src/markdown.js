@@ -132,8 +132,11 @@ function asyncImage(a, ctx) {
     ' data-maxw="' + escAttr(a.maxWidth || '') + '" data-maxh="' + escAttr(a.maxHeight || '') + '"';
   var inner = '';
   if (img) {
+    // data-* carry what the full-screen viewer needs (viewer.js).
     inner = '<img src="' + escAttr(small ? img.thumbnail : img.url) + '" alt="' + escAttr(img.title || a.query || '') + '"' +
-      ' class="' + (a.fit === 'contain' ? 'fit-contain' : 'fit-cover') + '" loading="lazy">';
+      ' class="' + (a.fit === 'contain' ? 'fit-contain' : 'fit-cover') + '" loading="lazy"' +
+      ' data-full="' + escAttr(img.url) + '" data-source-url="' + escAttr(img.source_url || '') + '"' +
+      ' data-source-host="' + escAttr(img.source_host || '') + '" data-title="' + escAttr(img.title || '') + '">';
     if (img.show_url && img.source_url) {
       inner += '<a class="gen-img-src" href="' + escAttr(img.source_url) + '">' + escText(img.source_host) + '</a>';
     }

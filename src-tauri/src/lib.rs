@@ -310,6 +310,91 @@ fn open_url(url: String) -> Result<(), String> {
     Ok(())
 }
 
+/// File name stem for a downloaded image: letters, digits, spaces, '-', '_' only.
+fn safe_stem(name: &str) -> String {
+    let stem: String = name
+        .chars()
+        .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' || c == ' ' { c } else { ' ' })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let stem: String = stem.chars().take(60).collect();
+    if stem.is_empty() { "image".into() } else { stem }
+}
+
+/// `dir/stem.ext`, or `dir/stem (n).ext` when that name is taken. Never overwrites.
+fn unique_path(dir: &std::path::Path, stem: &str, ext: &str) -> std::path::PathBuf {
+    let first = dir.join(format!("{stem}.{ext}"));
+    if !first.exists() {
+        return first;
+    }
+    (1..)
+        .map(|n| dir.join(format!("{stem} ({n}).{ext}")))
+        .find(|p| !p.exists())
+        .expect("unbounded range")
+}
+
+/// Save an image from a reply (as chatgpt.com's viewer "Download" does) to the Downloads folder.
+/// Only ChatGPT's own image host is accepted, so a reply can't make the app fetch other URLs.
+#[tauri::command]
+async fn download_image(url: String, name: String) -> Result<String, String> {
+    let parsed = reqwest::Url::parse(&url).map_err(|e| format!("Bad image link: {e}"))?;
+    if parsed.scheme() != "https" || parsed.host_str() != Some("images.openai.com") {
+        return Err("Only ChatGPT image links can be downloaded.".into());
+    }
+    let resp = reqwest::get(parsed).await.map_err(|e| format!("Download failed: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("Download failed (HTTP {}).", resp.status()));
+    }
+    let ext = match resp.headers().get(reqwest::header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).unwrap_or("") {
+        t if t.starts_with("image/png") => "png",
+        t if t.starts_with("image/webp") => "webp",
+        t if t.starts_with("image/gif") => "gif",
+        t if t.starts_with("image/jpeg") => "jpg",
+        t => return Err(format!("Not an image ({t}).")),
+    };
+    const MAX: usize = 50 * 1024 * 1024;
+    let bytes = resp.bytes().await.map_err(|e| format!("Download failed: {e}"))?;
+    if bytes.len() > MAX {
+        return Err("Image is larger than 50 MB.".into());
+    }
+    let dir = dirs::download_dir().ok_or("No Downloads folder found.")?;
+    let path = unique_path(&dir, &safe_stem(&name), ext);
+    std::fs::write(&path, &bytes).map_err(|e| format!("Could not save: {e}"))?;
+    Ok(path.to_string_lossy().to_string())
+}
+
+#[cfg(test)]
+mod download_tests {
+    use super::*;
+
+    #[test]
+    fn stems_are_safe() {
+        assert_eq!(safe_stem("..\\..\\Windows/evil:name?.exe"), "Windows evil name exe");
+        assert_eq!(safe_stem("   "), "image");
+        assert_eq!(safe_stem("X logo"), "X logo");
+    }
+
+    #[test]
+    fn unique_path_never_reuses_a_name() {
+        let dir = std::env::temp_dir().join(format!("dl-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let a = unique_path(&dir, "img", "png");
+        std::fs::write(&a, b"1").unwrap();
+        let b = unique_path(&dir, "img", "png");
+        assert_ne!(a, b);
+        assert!(b.ends_with("img (1).png"));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn rejects_other_hosts() {
+        assert!(download_image("https://example.com/a.png".into(), "a".into()).await.is_err());
+        assert!(download_image("http://images.openai.com/a.png".into(), "a".into()).await.is_err());
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let token = auth::load_token();
@@ -341,6 +426,7 @@ pub fn run() {
             open_url,
             upload_path,
             upload_bytes,
+            download_image,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
