@@ -298,8 +298,8 @@ class Chat {
     }
     s.shown = Math.min(next, s.target.length);
     const nearBottom = this._isNearBottom();
-    s.body.innerHTML = renderMarkdown(streamSafe(s.target.slice(0, s.shown)), Object.assign({ streaming: true }, this.ctx));
-    hydrateMedia(s.body);
+    // Only the blocks that changed (usually the last one) are replaced, like chatgpt.com.
+    patchHtml(s.body, renderMarkdown(streamSafe(s.target.slice(0, s.shown)), Object.assign({ streaming: true }, this.ctx)));
     if (nearBottom) this._scrollToBottom();
     if (s.shown < s.target.length) s.frame = requestAnimationFrame(() => this._revealStep());
   }
@@ -315,12 +315,13 @@ class Chat {
     while (this.stream && this.stream.shown < this.stream.target.length && performance.now() < deadline) {
       await new Promise((r) => requestAnimationFrame(r));
     }
+    const live = this.stream && this.stream.body;
     this._stopStream();
     const turn = this.pending || this._newAssistantTurn();
     this.pending = null;
     const activity = this._takeActivity();
     const nearBottom = this._isNearBottom();
-    this._fillAssistant(turn, text, this.ctx);
+    this._fillAssistant(turn, text, this.ctx, live && live.isConnected ? live : null);
     if (activity) turn.insertBefore(activity, turn.firstChild);
     if (nearBottom) this._scrollToBottom();
   }
@@ -399,7 +400,9 @@ class Chat {
     return turn;
   }
 
-  _fillAssistant(turn, text, ctx) {
+  // reuse: the body that streamed this reply, patched in place instead of rebuilt.
+  _fillAssistant(turn, text, ctx, reuse) {
+    if (reuse) reuse.remove();
     turn.innerHTML = '';
     const generated = (ctx && ctx.generated) || [];
     // Image-only replies (Create image) have no text, only the generated images.
@@ -414,10 +417,11 @@ class Chat {
     const actions = document.createElement('div');
     actions.className = 'msg-actions';
     if (text) {
-      const body = document.createElement('div');
+      // The body that streamed is kept and patched (finished paragraphs and formulas stay the
+      // same nodes, like chatgpt.com); otherwise it's built fresh.
+      const body = reuse || document.createElement('div');
       body.className = 'msg-assistant';
-      body.innerHTML = renderMarkdown(text, ctx);
-      hydrateMedia(body);
+      patchHtml(body, renderMarkdown(text, ctx));
       turn.appendChild(body);
       hydrateGenUI(body);
       actions.innerHTML = '<button type="button" class="act-btn" data-action="copy-msg" title="Copy">' + icon('copy', 18) + '</button>';

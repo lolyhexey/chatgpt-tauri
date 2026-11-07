@@ -49,6 +49,7 @@ function renderMarkdown(text, ctx) {
 // swapped for a plain token first and KaTeX's output goes in after sanitizing (KaTeX escapes
 // the TeX itself and builds its own markup). Code blocks and inline code are left alone.
 var MATH_RE = /\\\[([\s\S]+?)\\\]|\$\$([\s\S]+?)\$\$|\\\(([\s\S]+?)\\\)/g;
+var MATH_CACHE = new Map();
 
 function extractMath(text, store) {
   return text.split(/(```[\s\S]*?(?:```|$)|~~~[\s\S]*?(?:~~~|$)|`[^`\n]*`)/).map(function (seg, i) {
@@ -67,7 +68,14 @@ function restoreMath(html, store) {
     var m = store[Number(n)];
     if (!m) return '';
     if (typeof katex === 'undefined') return escText(m.display ? '\\[' + m.tex + '\\]' : '\\(' + m.tex + '\\)');
-    var out = katex.renderToString(m.tex.trim(), { displayMode: m.display, throwOnError: false, strict: 'ignore', trust: false });
+    // While a reply streams, the same formulas are rendered again on every frame: reuse them.
+    var key = (m.display ? 'D' : 'I') + m.tex.trim();
+    var out = MATH_CACHE.get(key);
+    if (out === undefined) {
+      out = katex.renderToString(m.tex.trim(), { displayMode: m.display, throwOnError: false, strict: 'ignore', trust: false });
+      if (MATH_CACHE.size > 500) MATH_CACHE.clear();
+      MATH_CACHE.set(key, out);
+    }
     return m.display ? '<div class="math-display">' + out + '</div>' : out;
   };
   // A formula alone in its paragraph becomes the block itself.
@@ -187,6 +195,30 @@ function asyncImage(a, ctx) {
 
 // Apply <AsyncImage/> sizing after sanitizing (which strips style attributes). Only plain
 // numbers, px and % are accepted.
+// Put rendered HTML into el, keeping the top-level blocks that are unchanged (same HTML as
+// when they were inserted) and replacing from the first block that differs. While a reply
+// streams only its tail changes, so finished paragraphs, code and formulas stay the same
+// nodes (as on chatgpt.com) instead of being rebuilt every frame.
+function patchHtml(el, html) {
+  var tpl = document.createElement('template');
+  tpl.innerHTML = html;
+  var fresh = Array.prototype.slice.call(tpl.content.childNodes);
+  var src = function (n) { return n.nodeType === 1 ? n.outerHTML : n.nodeType + ':' + n.textContent; };
+  var sources = fresh.map(src);
+  var old = Array.prototype.slice.call(el.childNodes);
+  var same = 0;
+  while (same < fresh.length && same < old.length && old[same]._src === sources[same]) same++;
+  for (var i = same; i < old.length; i++) old[i].remove();
+  if (same === fresh.length) return;
+  var add = document.createDocumentFragment();
+  for (var j = same; j < fresh.length; j++) {
+    fresh[j]._src = sources[j];
+    add.appendChild(fresh[j]);
+  }
+  hydrateMedia(add);
+  el.appendChild(add);
+}
+
 function hydrateMedia(root) {
   var len = function (v) {
     if (/^\d+(\.\d+)?$/.test(v)) return v + 'px';

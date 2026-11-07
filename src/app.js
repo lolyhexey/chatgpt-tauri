@@ -245,7 +245,7 @@ async function refreshOpenChat(v) {
     const conv = await invoke('get_conversation_cmd', { id: v.convId });
     if (v.running || v.remote || v.parentId !== before || (voiceActive && v === view)) return;
     convCache.set(v.convId, conv);
-    if (convSig(conv) !== v.sig) renderConv(v, conv, { keepScroll: true });
+    if (convSig(conv) !== v.sig && !adoptLiveTurns(v, conv)) renderConv(v, conv, { keepScroll: true });
   } catch (e) {
     console.warn('chat refresh failed', e);
   } finally {
@@ -269,6 +269,22 @@ function partialConv(conv) {
   const last = msgs[msgs.length - 1];
   if (last && last.role !== 'user') msgs[msgs.length - 1] = { ...last, content: last.content.replace(/<\/?[a-z][^>]*$/i, '') };
   return { ...conv, messages: msgs };
+}
+
+// Turns this app built while chatting (your messages, streamed replies) carry no fingerprint,
+// so a refresh used to see them all as changed and redraw the whole chat. When the server's
+// latest message is the one this view already ends at and the turns line up, they are labelled
+// with the server's fingerprints instead and nothing is redrawn.
+function adoptLiveTurns(v, conv) {
+  if (!conv.current_node || conv.current_node !== v.parentId) return false;
+  const list = mergeReplies(conv.messages);
+  const turns = [...v.el.children];
+  if (turns.length !== list.length || turns.some((t) => !t.classList.contains('turn'))) return false;
+  const sigs = list.map(turnSig);
+  if (turns.some((t, i) => (t.classList.contains('turn-user') !== (list[i].role === 'user')) || (t.dataset.sig && t.dataset.sig !== sigs[i]))) return false;
+  turns.forEach((t, i) => { t.dataset.sig = sigs[i]; });
+  v.sig = convSig(conv);
+  return true;
 }
 
 function renderConv(v, conv, opts) {
