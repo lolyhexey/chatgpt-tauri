@@ -23,6 +23,8 @@ pub struct ChatGptClient {
     pub system_hints: Vec<String>,
     /// chatgpt.com's effort slider: None (Instant), "standard" (Medium), "extended" (High).
     pub thinking_effort: Option<String>,
+    /// Set to true (via the paired sender) to stop reading the reply; what arrived is kept.
+    pub cancel: Option<tokio::sync::watch::Receiver<bool>>,
 }
 
 #[derive(Debug)]
@@ -50,7 +52,37 @@ impl ChatGptClient {
             actual_model: None,
             system_hints: Vec::new(),
             thinking_effort: None,
+            cancel: None,
         }
+    }
+
+    /// Tell the server to stop generating, as chatgpt.com's Stop button does
+    /// (POST /backend-api/stop_conversation, checked on the web).
+    pub async fn stop_conversation(&self, conversation_id: &str) -> Result<(), String> {
+        let url = format!("{BASE_URL}/backend-api/stop_conversation");
+        let resp = self
+            .client
+            .post(&url)
+            .headers(self.headers())
+            .json(&json!({ "conversation_id": conversation_id, "exclude_async_types": [] }))
+            .send()
+            .await
+            .map_err(|e| format!("Stop failed: {e}"))?;
+        if !resp.status().is_success() {
+            return Err(format!("Stop failed (HTTP {}).", resp.status()));
+        }
+        Ok(())
+    }
+
+    /// Which conversation the next message continues, as the UI says (None = a new chat).
+    /// Each send carries its own target, so switching chats mid-reply can't redirect it.
+    pub fn set_thread(&mut self, conversation_id: Option<String>, parent_message_id: Option<String>) {
+        let id_ok = |s: &String| !s.is_empty() && s.len() <= 100 && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+        self.conversation_id = conversation_id.filter(id_ok);
+        self.parent_message_id = match (&self.conversation_id, parent_message_id.filter(id_ok)) {
+            (Some(_), Some(parent)) => parent,
+            _ => Uuid::new_v4().to_string(),
+        };
     }
 
     /// Model and effort as the composer's picker chose them; ignores values that aren't
@@ -297,7 +329,7 @@ impl ChatGptClient {
         &mut self,
         text: &str,
         attachments: &[UploadedFile],
-        mut on_event: F,
+        on_event: F,
     ) -> Result<Vec<StreamEvent>, String> {
         let reqs = self.get_requirements().await?;
 
@@ -373,15 +405,39 @@ impl ChatGptClient {
             return Err(format!("API error (HTTP {status}): {}", &body_text[..cut]));
         }
 
-        let mut parser = SseParser::default();
-        let mut events = Vec::new();
-        let mut raw_log = last_stream_path().and_then(|p| {
+        let raw_log = last_stream_path().and_then(|p| {
             std::fs::create_dir_all(p.parent()?).ok()?;
             std::fs::File::create(p).ok()
         });
+        self.read_reply(&mut resp, raw_log, on_event).await
+    }
+
+    /// Read a reply's SSE stream into events (calling `on_event` as each arrives) until it ends
+    /// or `self.cancel` flips (Stop), which works even while the server is silent (thinking).
+    /// Text that already arrived is kept either way.
+    async fn read_reply<F: FnMut(&StreamEvent)>(
+        &mut self,
+        resp: &mut reqwest::Response,
+        mut raw_log: Option<std::fs::File>,
+        mut on_event: F,
+    ) -> Result<Vec<StreamEvent>, String> {
+        let mut parser = SseParser::default();
+        let mut events = Vec::new();
         // Bytes, not String: a chunk boundary can split a multi-byte (e.g. Thai) character.
         let mut pending: Vec<u8> = Vec::new();
-        while let Some(chunk) = resp.chunk().await.map_err(|e| format!("Stream read error: {e}"))? {
+        let mut cancel = self.cancel.take();
+        loop {
+            if cancel.as_ref().is_some_and(|rx| *rx.borrow()) {
+                break;
+            }
+            let next = match cancel.as_mut() {
+                Some(rx) => tokio::select! {
+                    chunk = resp.chunk() => chunk,
+                    _ = rx.changed() => continue,
+                },
+                None => resp.chunk().await,
+            };
+            let Some(chunk) = next.map_err(|e| format!("Stream read error: {e}"))? else { break };
             pending.extend_from_slice(&chunk);
             while let Some(nl) = pending.iter().position(|&b| b == b'\n') {
                 let line: Vec<u8> = pending.drain(..=nl).collect();
@@ -407,6 +463,7 @@ impl ChatGptClient {
             on_event(&done);
             events.push(done);
         }
+        self.cancel = cancel;
         Ok(events)
     }
 
@@ -626,15 +683,7 @@ impl ChatGptClient {
                     if role != "user" && !is_user_visible(msg) {
                         continue;
                     }
-                    let parts = msg["content"]["parts"]
-                        .as_array()
-                        .map(|arr| {
-                            arr.iter()
-                                .filter_map(|p| p.as_str())
-                                .collect::<Vec<_>>()
-                                .join("")
-                        })
-                        .unwrap_or_default();
+                    let parts = message_text(msg);
                     let attachments: Vec<AttachmentInfo> = msg["metadata"]["attachments"]
                         .as_array()
                         .map(|arr| {
@@ -642,6 +691,7 @@ impl ChatGptClient {
                                 .map(|a| AttachmentInfo {
                                     name: a["name"].as_str().unwrap_or("file").to_string(),
                                     mime_type: a["mime_type"].as_str().unwrap_or("").to_string(),
+                                    id: a["id"].as_str().unwrap_or("").to_string(),
                                 })
                                 .collect()
                         })
@@ -1011,6 +1061,24 @@ fn redact_stream_line(line: &str) -> String {
     }
 }
 
+/// A stored message's text: string parts, plus the transcript of voice-mode turns
+/// ({"content_type":"audio_transcription","text":…} parts), which have no string parts at all.
+fn message_text(msg: &Value) -> String {
+    msg["content"]["parts"]
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|p| {
+                    p.as_str().or_else(|| {
+                        (p["content_type"].as_str() == Some("audio_transcription")).then(|| p["text"].as_str()).flatten()
+                    })
+                })
+                .collect::<Vec<_>>()
+                .join("")
+        })
+        .unwrap_or_default()
+}
+
 /// A signed file link served by ChatGPT itself (where generated images live).
 pub fn is_chatgpt_file_url(link: &str) -> bool {
     let Ok(u) = reqwest::Url::parse(link) else { return false };
@@ -1175,6 +1243,25 @@ fn tool_call_detail(msg: &Value) -> String {
     truncate_chars(raw.trim(), 300)
 }
 
+/// The step's icon as chatgpt.com shows it (metadata.tool_icons): an app logo URL, a site path
+/// on chatgpt.com, or a named icon. Favicons served by Google are skipped on purpose: loading
+/// them would send every searched site to Google.
+fn step_icon(msg: &Value) -> String {
+    let Some(first) = msg.pointer("/metadata/tool_icons/0").and_then(|i| i.as_str()) else { return String::new() };
+    if let Ok(u) = reqwest::Url::parse(first) {
+        let host = u.host_str().unwrap_or("");
+        let google = host == "google.com" || host.ends_with(".google.com") || host.ends_with(".gstatic.com");
+        return if u.scheme() == "https" && !google { first.to_string() } else { String::new() };
+    }
+    if first.starts_with('/') && !first.starts_with("//") {
+        return format!("{BASE_URL}{first}");
+    }
+    if first.len() <= 30 && first.chars().all(|c| c.is_ascii_lowercase() || c == '-' || c == '_') {
+        return first.to_string();
+    }
+    String::new()
+}
+
 /// Classify a non-reply message as a progress step: (kind, title, detail, tool).
 fn activity_step(msg: &Value) -> Option<(String, String, String, String)> {
     let role = msg.pointer("/author/role").and_then(|r| r.as_str()).unwrap_or("");
@@ -1186,7 +1273,15 @@ fn activity_step(msg: &Value) -> Option<(String, String, String, String)> {
     }
 
     if role == "assistant" && recipient != "all" {
-        let title = if title.is_empty() { friendly_tool(recipient) } else { title };
+        // chatgpt.com's own wording ("Running app request") beats our guess from the tool name.
+        let invoking = msg.pointer("/metadata/tool_invoking_message").and_then(|t| t.as_str()).unwrap_or("");
+        let title = if !title.is_empty() {
+            title
+        } else if !invoking.is_empty() {
+            truncate_chars(invoking, 120)
+        } else {
+            friendly_tool(recipient)
+        };
         return Some(("tool_call".into(), title, tool_call_detail(msg), recipient.to_string()));
     }
     if role == "tool" {
@@ -1261,13 +1356,21 @@ struct SseParser {
     step_sigs: HashMap<String, String>,
     image_queries: std::collections::HashSet<String>,
     generated_ids: std::collections::HashSet<String>,
+    announced_conversation: Option<String>,
 }
 
 impl SseParser {
     /// Events for one SSE line: at most one text/step event, plus any newly resolved images.
     fn feed(&mut self, line: &str, client: &mut ChatGptClient) -> Vec<StreamEvent> {
         let Some((msg_id, data)) = parse_sse_line(line) else { return Vec::new() };
-        let mut out: Vec<StreamEvent> = self.feed_message(msg_id, &data, client).into_iter().collect();
+        let mut out: Vec<StreamEvent> = Vec::new();
+        if let Some(conv_id) = data.get("conversation_id").and_then(|c| c.as_str()) {
+            if self.announced_conversation.as_deref() != Some(conv_id) {
+                self.announced_conversation = Some(conv_id.to_string());
+                out.push(StreamEvent::Conversation { conversation_id: conv_id.to_string() });
+            }
+        }
+        out.extend(self.feed_message(msg_id, &data, client));
         if is_user_visible(&data["message"]) {
             let fresh: Vec<GenImage> = genui_images(&data["message"])
                 .into_iter()
@@ -1295,12 +1398,13 @@ impl SseParser {
         // Tool calls, tool output and thinking are shown as progress steps, never as reply text.
         if let Some((kind, title, detail, tool)) = activity_step(msg) {
             let sources = search_sources(msg);
-            let sig = format!("{kind}\u{1}{title}\u{1}{detail}\u{1}{tool}\u{1}{}", sources.len());
+            let icon = step_icon(msg);
+            let sig = format!("{kind}\u{1}{title}\u{1}{detail}\u{1}{tool}\u{1}{}\u{1}{icon}", sources.len());
             if self.step_sigs.get(&msg_id) == Some(&sig) {
                 return None;
             }
             self.step_sigs.insert(msg_id.clone(), sig);
-            return Some(StreamEvent::Step { id: msg_id, kind, title, detail, tool, sources });
+            return Some(StreamEvent::Step { id: msg_id, kind, title, detail, tool, sources, icon });
         }
         if !is_user_visible(msg) {
             return None;
@@ -1486,6 +1590,83 @@ mod tests {
         assert!(!is_chatgpt_file_url("https://chatgpt.com/backend-api/conversations"));
         assert!(!is_chatgpt_file_url("https://evil.com/oaiusercontent.com"));
         assert!(!is_chatgpt_file_url("https://chatgpt.com.evil.com/backend-api/estuary/content"));
+    }
+
+    /// Stop while the server is silent (thinking) must end the read at once, keeping what came.
+    #[tokio::test]
+    async fn stop_ends_a_silent_stream() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 4096];
+            let _ = sock.read(&mut buf).await;
+            let body = "data: {\"message\":{\"id\":\"a\",\"author\":{\"role\":\"assistant\"},\"recipient\":\"all\",\"content\":{\"content_type\":\"text\",\"parts\":[\"partial\"]}}}\n";
+            let head = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n";
+            sock.write_all(head.as_bytes()).await.unwrap();
+            sock.write_all(format!("{:x}\r\n{}\r\n", body.len(), body).as_bytes()).await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_secs(30)).await; // then silence
+        });
+        let (tx, rx) = tokio::sync::watch::channel(false);
+        let mut client = ChatGptClient::new("t".into());
+        client.cancel = Some(rx);
+        let mut resp = reqwest::get(format!("http://{addr}/")).await.unwrap();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            let _ = tx.send(true);
+        });
+        let started = std::time::Instant::now();
+        let events = client.read_reply(&mut resp, None, |_| {}).await.expect("stopped, not failed");
+        assert!(started.elapsed() < std::time::Duration::from_secs(5), "stopped promptly");
+        assert_eq!(join_reply(&events).0, "partial", "text that arrived is kept");
+        assert!(client.cancel.is_some(), "the stop switch is kept for the next round (Goal mode)");
+    }
+
+    #[test]
+    fn voice_turns_show_their_transcript() {
+        let user: Value = serde_json::from_str(r#"{"content":{"content_type":"multimodal_text","parts":[
+            {"content_type":"real_time_user_audio_video_asset_pointer"},
+            {"content_type":"audio_transcription","text":"ทดสอบเสียง","direction":"in"}]}}"#).unwrap();
+        assert_eq!(message_text(&user), "ทดสอบเสียง");
+        let plain: Value = serde_json::from_str(r#"{"content":{"content_type":"text","parts":["hello"]}}"#).unwrap();
+        assert_eq!(message_text(&plain), "hello");
+        let other: Value = serde_json::from_str(r#"{"content":{"content_type":"multimodal_text","parts":[{"content_type":"image_asset_pointer","text":"x"}]}}"#).unwrap();
+        assert_eq!(message_text(&other), "", "only transcripts count, not other objects");
+    }
+
+    #[test]
+    fn steps_carry_the_tools_own_icon() {
+        let with = |icons: Value| json!({ "author": { "role": "assistant" }, "recipient": "api_tool.call_tool", "content": { "content_type": "code", "text": "{}" }, "metadata": { "tool_icons": icons, "tool_invoking_message": "Running app request" } });
+        assert_eq!(step_icon(&with(json!(["https://files.openai.com/content?id=1&sig=x"]))), "https://files.openai.com/content?id=1&sig=x");
+        assert_eq!(step_icon(&with(json!(["/images/ecosystem/apps/personal_context/icon.png"]))), "https://chatgpt.com/images/ecosystem/apps/personal_context/icon.png");
+        assert_eq!(step_icon(&with(json!(["globe"]))), "globe");
+        assert_eq!(step_icon(&with(json!(["https://www.google.com/s2/favicons?domain=x.com"]))), "", "no Google favicons");
+        assert_eq!(step_icon(&with(json!(["javascript:alert(1)"]))), "");
+        assert_eq!(step_icon(&with(json!([]))), "");
+        let (_, title, _, _) = activity_step(&with(json!(["globe"]))).unwrap();
+        assert_eq!(title, "Running app request", "the web's own wording when there is no reasoning title");
+    }
+
+    #[test]
+    fn each_send_targets_its_own_conversation() {
+        let mut client = ChatGptClient::new("t".into());
+        client.set_thread(Some("conv-a".into()), Some("msg-1".into()));
+        assert_eq!((client.conversation_id.as_deref(), client.parent_message_id.as_str()), (Some("conv-a"), "msg-1"));
+        client.set_thread(None, Some("msg-1".into()));
+        assert_eq!(client.conversation_id, None, "new chat");
+        assert_ne!(client.parent_message_id, "msg-1", "a new chat starts from a fresh parent");
+        client.set_thread(Some("bad id\"".into()), None);
+        assert_eq!(client.conversation_id, None);
+    }
+
+    #[test]
+    fn stream_announces_its_conversation_once() {
+        let mut client = ChatGptClient::new("t".into());
+        let line = r#"data: {"message":{"id":"a","author":{"role":"assistant"},"recipient":"all","content":{"content_type":"text","parts":["hi"]}},"conversation_id":"c9"}"#;
+        let events = parse_sse_stream(&format!("{line}\n{line}"), &mut client);
+        let announced: Vec<_> = events.iter().filter_map(|e| match e { StreamEvent::Conversation { conversation_id } => Some(conversation_id.as_str()), _ => None }).collect();
+        assert_eq!(announced, ["c9"]);
     }
 
     #[test]

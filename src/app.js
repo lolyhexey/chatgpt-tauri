@@ -27,7 +27,54 @@ hydrateIcons();
 
 const mentions = new Mentions(chatInput, $('mention-chips'), $('mention-menu'), () => updateSendState());
 const picker = new ModelPicker($('model-btn'), $('model-label'), $('model-panel'));
-const chat = new Chat($('thread'), $('messages'), mainEl);
+// One view per open chat: its own thread element, Chat, and place in the conversation
+// (convId + parentId, sent with every message). A chat whose reply is still running keeps its
+// view when you switch away (hidden, still streaming); others are dropped and reloaded.
+const messagesEl = $('messages');
+const parkedViews = new Set();
+// conversation id -> { conv, updated } so switching back to a chat is instant while unchanged.
+const convCache = new Map();
+
+function makeView(convId, el) {
+  el = el || document.createElement('div');
+  el.classList.add('thread');
+  if (!el.parentNode) messagesEl.appendChild(el);
+  return { convId, parentId: null, el, chat: new Chat(el, messagesEl, mainEl), running: false };
+}
+
+let view = makeView(null, $('thread'));
+let chat = view.chat;
+
+function showView(next) {
+  if (view !== next) {
+    if (view.running) { view.el.hidden = true; parkedViews.add(view); } else view.el.remove();
+    if (!next.el.parentNode) messagesEl.appendChild(next.el);
+  }
+  next.el.hidden = false;
+  parkedViews.delete(next);
+  view = next;
+  chat = next.chat;
+  currentConversationId = next.convId;
+  chat._updateEmpty();
+  updateSendState();
+}
+
+// A run finished: if its view isn't shown, drop it (the chat reloads from the server next time).
+function finishRun(v) {
+  v.running = false;
+  v.stopping = false;
+  v.streamId = null;
+  if (v.convId) {
+    sidebar.setBusy(v.convId, false);
+    convCache.delete(v.convId);
+  }
+  if (v !== view) { parkedViews.delete(v); v.el.remove(); }
+}
+
+function runningViewFor(convId) {
+  if (view.convId === convId && view.running) return view;
+  return [...parkedViews].find((v) => v.convId === convId) || null;
+}
 const attachments = new Attachments($('att-tray'), (message) => {
   if (message) setStatus(message);
   updateSendState();
@@ -58,10 +105,38 @@ function showLogin(message) {
 }
 
 function updateSendState() {
+  // While the chat you're looking at is replying, the send button is a Stop button (like the web).
+  const stoppable = !!(view && view.running);
+  const mode = stoppable ? 'stop' : 'send';
+  if (sendBtn.dataset.mode !== mode) {
+    sendBtn.dataset.mode = mode;
+    sendBtn.innerHTML = icon(stoppable ? 'square' : 'arrow-up', 18);
+  }
+  if (stoppable) {
+    sendBtn.disabled = !!view.stopping;
+    sendBtn.classList.remove('busy');
+    sendBtn.title = 'Stop';
+    return;
+  }
   const hasContent = !!chatInput.value.trim() || attachments.count() > 0 || mentions.count() > 0;
   sendBtn.disabled = sending || attachments.busy() || !hasContent;
   sendBtn.classList.toggle('busy', sending);
-  sendBtn.title = attachments.busy() ? 'Waiting for files to upload' : 'Send';
+  sendBtn.title = attachments.busy() ? 'Waiting for files to upload' : sending ? 'Another chat is still replying' : 'Send';
+}
+
+// Stop the reply in the chat being viewed: the server is told (stop_conversation) and the
+// text that already arrived stays.
+async function stopCurrent() {
+  const v = view;
+  if (!v.running || v.stopping || !v.streamId) return;
+  v.stopping = true;
+  updateSendState();
+  setStatus('Stopping…');
+  try {
+    await invoke('stop_generation', { streamId: v.streamId, conversationId: v.convId });
+  } catch (e) {
+    console.warn('stop failed', e);
+  }
 }
 
 function setSending(value) {
@@ -87,21 +162,35 @@ function autosize() {
 }
 
 async function openConversation(id) {
-  if (sending) return;
-  currentConversationId = id;
   sidebar.setActive(id);
   setTitle(sidebar.titleOf(id));
-  setStatus('Loading…');
+  // Still replying there: show its live view instead of reloading.
+  const live = runningViewFor(id);
+  if (live) {
+    showView(live);
+    live.chat._scrollToBottom();
+    setStatus(sending ? 'Thinking…' : 'Ready');
+    return;
+  }
+  if (view.convId === id && !view.running && view.el.childElementCount) return;
+  const v = makeView(id);
+  showView(v);
+  const cached = convCache.get(id);
+  const fresh = cached && cached.updated === sidebar.updatedOf(id);
+  if (!fresh) setStatus('Loading…');
   try {
-    const conv = await invoke('get_conversation_cmd', { id });
-    await invoke('set_conversation', { id: conv.id, parentId: conv.current_node });
-    chat.loadConversation(conv.messages);
-    setTitle(conv.title);
-    setStatus('Ready');
+    const conv = fresh ? cached.conv : await invoke('get_conversation_cmd', { id });
+    if (!fresh) convCache.set(id, { conv, updated: sidebar.updatedOf(id) });
+    v.parentId = conv.current_node;
+    v.chat.loadConversation(conv.messages);
+    if (v === view) {
+      setTitle(conv.title);
+      setStatus(sending ? 'Thinking…' : 'Ready');
+    }
   } catch (e) {
-    chat.clear();
-    chat.addNotice(`Could not open this chat: ${e}`);
-    setStatus('Error');
+    v.chat.clear();
+    v.chat.addNotice(`Could not open this chat: ${e}`);
+    if (v === view) setStatus('Error');
     handleAuthError(e);
   }
 }
@@ -109,6 +198,7 @@ async function openConversation(id) {
 async function deleteConversation(id) {
   try {
     await invoke('delete_conversation_cmd', { id });
+    convCache.delete(id);
     if (id === currentConversationId) startNewChat();
     await sidebar.refresh();
   } catch (e) {
@@ -118,20 +208,44 @@ async function deleteConversation(id) {
 }
 
 function startNewChat() {
-  if (sending) return;
-  currentConversationId = null;
+  if (!view.running && !view.convId && view.el.childElementCount === 0) { chatInput.focus(); return; }
+  showView(makeView(null));
   chat.clear();
-  invoke('new_conversation');
   sidebar.setActive(null);
   setTitle(null);
-  setStatus('Ready');
+  setStatus(sending ? 'Thinking…' : 'Ready');
   chatInput.focus();
 }
 
-async function afterTurn() {
+async function afterTurn(v) {
   await sidebar.refresh();
-  sidebar.setActive(currentConversationId);
-  setTitle(sidebar.titleOf(currentConversationId));
+  if (v !== view) return;
+  sidebar.setActive(v.convId);
+  setTitle(sidebar.titleOf(v.convId));
+}
+
+// Live events for one send: text/steps go to that send's own view; the conversation id is
+// learned early so a new chat shows up (with a spinner) in the sidebar while it replies.
+function liveHandler(v, streamId, wrap) {
+  return (e) => {
+    if (e.payload.stream_id !== streamId) return;
+    if (e.payload.type === 'conversation') {
+      const first = !v.convId;
+      v.convId = e.payload.conversation_id;
+      if (v === view) currentConversationId = v.convId;
+      sidebar.setBusy(v.convId, true);
+      if (first) sidebar.refresh().then(() => { if (v === view) sidebar.setActive(v.convId); });
+      return;
+    }
+    wrap(() => v.chat.onLive(e.payload));
+  };
+}
+
+// Where a finished send leaves its conversation: the server's ids for the next message.
+function learnThread(v, events) {
+  const done = (events || []).filter((e) => e.type === 'done').pop();
+  if (done && done.conversation_id) v.convId = done.conversation_id;
+  if (done && done.message_id) v.parentId = done.message_id;
 }
 
 async function sendText(text, files = [], display = [], systemHints = []) {
@@ -139,24 +253,32 @@ async function sendText(text, files = [], display = [], systemHints = []) {
   if ((!text && !files.length) || sending) return;
   if (goalMode && text) return startGoal(text);
 
+  // Everything below uses this send's own view, so switching chats mid-reply is safe.
+  const v = view;
+  const vchat = v.chat;
+  v.running = true;
+  if (v.convId) sidebar.setBusy(v.convId, true);
   setSending(true);
-  chat.addUserMessage(text, display);
-  chat.startPending();
+  vchat.addUserMessage(text, display);
+  vchat.startPending();
   const streamId = 's' + Date.now().toString(36) + Math.random().toString(36).slice(2);
+  v.streamId = streamId;
+  updateSendState();
   let unlisten = null;
   try {
-    unlisten = await window.__TAURI__.event.listen('chat-delta', (e) => {
-      if (e.payload.stream_id === streamId) chat.onLive(e.payload);
-    });
-    const response = await invoke('send_message', Object.assign({ text, attachments: files, streamId, systemHints }, picker.request()));
+    unlisten = await window.__TAURI__.event.listen('chat-delta', liveHandler(v, streamId, (fn) => fn()));
+    const response = await invoke('send_message', Object.assign(
+      { text, attachments: files, streamId, systemHints, conversationId: v.convId, parentMessageId: v.parentId },
+      picker.request()));
     // full_text is joined per message in Rust (or is the server's stored copy).
-    if (response.stored) chat.useStored(response.stored);
-    await chat.completePending(response.full_text || '');
-    const done = response.events.find((e) => e.type === 'done');
-    if (done && done.conversation_id) currentConversationId = done.conversation_id;
-    await afterTurn();
+    if (response.stored) vchat.useStored(response.stored);
+    await vchat.completePending(response.full_text || '');
+    learnThread(v, response.events);
+    finishRun(v);
+    await afterTurn(v);
   } catch (e) {
-    chat.failPending(`Something went wrong: ${e}`);
+    vchat.failPending(`Something went wrong: ${e}`);
+    finishRun(v);
     handleAuthError(e);
   } finally {
     if (unlisten) unlisten();
@@ -166,39 +288,47 @@ async function sendText(text, files = [], display = [], systemHints = []) {
 
 async function startGoal(task) {
   setGoalMode(false);
+  const v = view;
+  const vchat = v.chat;
+  v.running = true;
+  if (v.convId) sidebar.setBusy(v.convId, true);
   setSending(true);
-  chat.addUserMessage(task);
-  const notice = chat.addNotice('Goal mode · round 1');
-  chat.startPending();
+  vchat.addUserMessage(task);
+  const notice = vchat.addNotice('Goal mode · round 1');
+  vchat.startPending();
   const streamId = 'g' + Date.now().toString(36) + Math.random().toString(36).slice(2);
+  v.streamId = streamId;
+  updateSendState();
   // Round boundaries close the previous reply asynchronously; queue every live event
   // behind them so the next round's text never lands in the previous reply.
   let queue = Promise.resolve();
   const later = (fn) => { queue = queue.then(fn, fn); };
   const unlisten = [];
   try {
-    unlisten.push(await window.__TAURI__.event.listen('chat-delta', (e) => {
-      if (e.payload.stream_id === streamId) later(() => chat.onLive(e.payload));
-    }));
+    unlisten.push(await window.__TAURI__.event.listen('chat-delta', liveHandler(v, streamId, later)));
     unlisten.push(await window.__TAURI__.event.listen('goal-round', (e) => {
       if (e.payload.stream_id !== streamId || e.payload.round < 2) return;
       later(async () => {
-        await chat.completePending(stripGoalMarker(chat.currentText()));
+        await vchat.completePending(stripGoalMarker(vchat.currentText()));
         notice.textContent = `Goal mode · round ${e.payload.round}`;
-        chat.addNotice(`Round ${e.payload.round} · asked ChatGPT to continue`);
-        chat.startPending();
+        vchat.addNotice(`Round ${e.payload.round} · asked ChatGPT to continue`);
+        vchat.startPending();
       });
     }));
-    const result = await invoke('start_goal', Object.assign({ task, streamId }, picker.request()));
+    const result = await invoke('start_goal', Object.assign(
+      { task, streamId, conversationId: v.convId, parentMessageId: v.parentId }, picker.request()));
     await queue;
     notice.textContent = `${result.complete ? 'Goal complete' : 'Goal stopped'} · ${result.iterations} ${result.iterations === 1 ? 'round' : 'rounds'}`;
     const last = result.responses[result.responses.length - 1];
-    await chat.completePending(last ? stripGoalMarker(last.full_text) : '');
-    await afterTurn();
+    await vchat.completePending(last ? stripGoalMarker(last.full_text) : '');
+    if (last) learnThread(v, last.events);
+    finishRun(v);
+    await afterTurn(v);
   } catch (e) {
     await queue;
     notice.textContent = 'Goal failed';
-    chat.failPending(`Goal error: ${e}`);
+    vchat.failPending(`Goal error: ${e}`);
+    finishRun(v);
     handleAuthError(e);
   } finally {
     unlisten.forEach((u) => u());
@@ -322,7 +452,7 @@ chatInput.addEventListener('keydown', (e) => {
 });
 chatInput.addEventListener('input', () => { autosize(); updateSendState(); mentions.onInput(); });
 chatInput.addEventListener('click', () => mentions.onInput());
-sendBtn.addEventListener('click', submitComposer);
+sendBtn.addEventListener('click', () => { if (view.running) stopCurrent(); else submitComposer(); });
 $('goal-chip-close').addEventListener('click', () => { setGoalMode(false); chatInput.focus(); });
 $('goal-nav-btn').addEventListener('click', () => { setGoalMode(true); chatInput.focus(); });
 

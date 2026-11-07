@@ -15,6 +15,40 @@ pub struct AppState {
     pub model: Mutex<String>,
     pub conversation_id: Mutex<Option<String>>,
     pub parent_message_id: Mutex<String>,
+    /// Stop switches for replies in progress, by the UI's stream id.
+    pub stops: Mutex<std::collections::HashMap<String, tokio::sync::watch::Sender<bool>>>,
+}
+
+/// A stop switch for one send; Stop flips it and the reply loop ends.
+fn register_stop(state: &AppState, stream_id: &str) -> tokio::sync::watch::Receiver<bool> {
+    let (tx, rx) = tokio::sync::watch::channel(false);
+    state.stops.lock().unwrap().insert(stream_id.to_string(), tx);
+    rx
+}
+
+fn unregister_stop(state: &AppState, stream_id: Option<&str>) {
+    if let Some(id) = stream_id {
+        state.stops.lock().unwrap().remove(id);
+    }
+}
+
+/// Stop a reply like chatgpt.com's Stop button: tell the server (stop_conversation), then stop
+/// reading. Text that already arrived stays.
+#[tauri::command]
+async fn stop_generation(
+    stream_id: String,
+    conversation_id: Option<String>,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    if let Some(conv) = conversation_id.filter(|c| !c.is_empty() && c.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '-')) {
+        if let Err(e) = make_client(&state)?.stop_conversation(&conv).await {
+            eprintln!("stop_conversation: {e}");
+        }
+    }
+    if let Some(tx) = state.stops.lock().unwrap().get(&stream_id) {
+        let _ = tx.send(true);
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -115,16 +149,22 @@ async fn send_message(
     system_hints: Option<Vec<String>>,
     model: Option<String>,
     thinking_effort: Option<String>,
+    conversation_id: Option<String>,
+    parent_message_id: Option<String>,
     state: tauri::State<'_, AppState>,
     app: tauri::AppHandle,
 ) -> Result<ChatResponse, String> {
     let mut client = make_client(&state)?;
+    client.set_thread(conversation_id, parent_message_id);
     client.system_hints = system_hints.unwrap_or_default();
     client.set_model_choice(model, thinking_effort);
+    client.cancel = stream_id.as_deref().map(|id| register_stop(&state, id));
     let attachments = attachments.unwrap_or_default();
-    let events = client
+    let result = client
         .send_message_streaming(&text, &attachments, |ev| emit_live(&app, stream_id.as_deref(), ev))
-        .await?;
+        .await;
+    unregister_stop(&state, stream_id.as_deref());
+    let events = result?;
 
     if let Some(conv_id) = &client.conversation_id {
         *state.conversation_id.lock().unwrap() = Some(conv_id.clone());
@@ -171,38 +211,20 @@ async fn start_goal(
     stream_id: Option<String>,
     model: Option<String>,
     thinking_effort: Option<String>,
+    conversation_id: Option<String>,
+    parent_message_id: Option<String>,
     state: tauri::State<'_, AppState>,
     app: tauri::AppHandle,
 ) -> Result<GoalResponse, String> {
-    use tauri::Emitter;
     let mut client = make_client(&state)?;
+    client.set_thread(conversation_id, parent_message_id);
     client.set_model_choice(model, thinking_effort);
+    let stop = stream_id.as_deref().map(|id| register_stop(&state, id));
+    client.cancel = stop.clone();
     let mut responses = Vec::new();
-
-    for round in 0..GOAL_MAX_ROUNDS {
-        let prompt = if round == 0 {
-            format!("Work on this goal autonomously until it is done. Use your connected tools to investigate, make the changes, and verify the result.\n\nGoal: {task}\n\nWhen the goal is fully complete and verified, end your reply with {GOAL_DONE}")
-        } else {
-            format!("The goal is not complete yet. Continue working on: \"{task}\"\n\nWhen it is fully complete and verified, end your reply with {GOAL_DONE}")
-        };
-
-        if let Some(id) = &stream_id {
-            let _ = app.emit("goal-round", GoalRound { stream_id: id, round: round + 1 });
-        }
-        let events = client
-            .send_message_streaming(&prompt, &[], |ev| emit_live(&app, stream_id.as_deref(), ev))
-            .await?;
-        let full_text = reply_text(&events);
-        let is_complete = full_text.contains(GOAL_DONE);
-        // Keep the conversation pointer current so a failed later round still resumes here.
-        if let Some(conv_id) = &client.conversation_id {
-            *state.conversation_id.lock().unwrap() = Some(conv_id.clone());
-        }
-        *state.parent_message_id.lock().unwrap() = client.parent_message_id.clone();
-        responses.push(ChatResponse { events, full_text, stored: None });
-
-        if is_complete { break; }
-    }
+    let result = goal_rounds(&task, &mut client, &mut responses, stop.as_ref(), stream_id.as_deref(), &state, &app).await;
+    unregister_stop(&state, stream_id.as_deref());
+    result?;
 
     if let Some(conv_id) = &client.conversation_id {
         *state.conversation_id.lock().unwrap() = Some(conv_id.clone());
@@ -216,6 +238,47 @@ async fn start_goal(
         complete,
         responses,
     })
+}
+
+/// Goal rounds until ChatGPT says it's done, the round limit, or Stop.
+async fn goal_rounds(
+    task: &str,
+    client: &mut ChatGptClient,
+    responses: &mut Vec<ChatResponse>,
+    stop: Option<&tokio::sync::watch::Receiver<bool>>,
+    stream_id: Option<&str>,
+    state: &AppState,
+    app: &tauri::AppHandle,
+) -> Result<(), String> {
+    use tauri::Emitter;
+    for round in 0..GOAL_MAX_ROUNDS {
+        if stop.is_some_and(|rx| *rx.borrow()) {
+            break;
+        }
+        let prompt = if round == 0 {
+            format!("Work on this goal autonomously until it is done. Use your connected tools to investigate, make the changes, and verify the result.\n\nGoal: {task}\n\nWhen the goal is fully complete and verified, end your reply with {GOAL_DONE}")
+        } else {
+            format!("The goal is not complete yet. Continue working on: \"{task}\"\n\nWhen it is fully complete and verified, end your reply with {GOAL_DONE}")
+        };
+
+        if let Some(id) = stream_id {
+            let _ = app.emit("goal-round", GoalRound { stream_id: id, round: round + 1 });
+        }
+        let events = client
+            .send_message_streaming(&prompt, &[], |ev| emit_live(app, stream_id, ev))
+            .await?;
+        let full_text = reply_text(&events);
+        let is_complete = full_text.contains(GOAL_DONE);
+        // Keep the conversation pointer current so a failed later round still resumes here.
+        if let Some(conv_id) = &client.conversation_id {
+            *state.conversation_id.lock().unwrap() = Some(conv_id.clone());
+        }
+        *state.parent_message_id.lock().unwrap() = client.parent_message_id.clone();
+        responses.push(ChatResponse { events, full_text, stored: None });
+
+        if is_complete { break; }
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -486,6 +549,7 @@ pub fn run() {
         model: Mutex::new("auto".into()),
         conversation_id: Mutex::new(None),
         parent_message_id: Mutex::new(uuid::Uuid::new_v4().to_string()),
+        stops: Mutex::new(std::collections::HashMap::new()),
     };
 
     tauri::Builder::default()
@@ -510,6 +574,7 @@ pub fn run() {
             download_image,
             system_hints_cmd,
             models_cmd,
+            stop_generation,
             generated_image,
             save_generated_image,
         ])

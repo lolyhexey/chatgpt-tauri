@@ -57,6 +57,9 @@ pub struct Source {
 pub struct AttachmentInfo {
     pub name: String,
     pub mime_type: String,
+    /// File id, so the UI can show an attached image (fetched through Rust with the token).
+    #[serde(default)]
+    pub id: String,
 }
 
 /// A file uploaded to ChatGPT, ready to be referenced from a message.
@@ -124,10 +127,18 @@ pub enum StreamEvent {
         tool: String,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         sources: Vec<Source>,
+        /// The tool's own icon from metadata.tool_icons: an https image URL (e.g. the Hexey
+        /// logo) or a named icon ("globe", "code"); empty when there is none to show.
+        #[serde(default)]
+        icon: String,
     },
     /// Images resolved for <AsyncImage/> components in the reply.
     #[serde(rename = "images")]
     Images { images: Vec<GenImage> },
+    /// The conversation this reply belongs to, as soon as the server names it (new chats get
+    /// their id here, long before the reply ends).
+    #[serde(rename = "conversation")]
+    Conversation { conversation_id: String },
     /// Images created by ChatGPT's image tool, as soon as they arrive.
     #[serde(rename = "generated")]
     Generated { images: Vec<GeneratedImage> },

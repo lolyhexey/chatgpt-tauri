@@ -140,6 +140,27 @@ button { font: inherit; color: inherit; }
 
 .sb-chat-title { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
+/* chatgpt.com doesn't show "ChatGPT can make mistakes…" above the box once a chat has messages */
+.main:not(.is-empty) .disclaimer { display: none; }
+
+/* Tool logos in the activity panel (e.g. the Hexey icon), and attached images still loading */
+.step-logo { display: block; width: 16px; height: 16px; border-radius: 4px; object-fit: contain; }
+.msg-files img.msg-file-loading { width: 96px; height: 96px; background: #212121; animation: busy 1.4s ease-in-out infinite; }
+
+/* A chat whose reply is still running (it may be in the background) */
+.sb-chat-busy {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  margin: 0 4px;
+  border: 2px solid rgba(255, 255, 255, 0.25);
+  border-top-color: var(--text);
+  border-radius: 50%;
+  animation: spin 0.9s linear infinite;
+}
+/* Threads of chats replying in the background stay in the page but out of sight. */
+.thread[hidden] { display: none !important; }
+
 .sb-chat-del {
   display: inline-flex;
   align-items: center;

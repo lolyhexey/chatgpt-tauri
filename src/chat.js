@@ -154,7 +154,7 @@ class Chat {
     }
     if (ev.kind === 'tool_call') a.lastCall = ev.id;
     const title = ev.title || (ev.kind === 'thought' ? 'Thinking' : 'Working');
-    item.querySelector('.step-icon').innerHTML = icon(stepIcon(ev), 14);
+    item.querySelector('.step-icon').innerHTML = stepIconHtml(ev);
     item.querySelector('.step-title').textContent = title;
     const detail = item.querySelector('.step-detail');
     // A thought's summary is already its title; only show the rest.
@@ -282,23 +282,20 @@ class Chat {
           row.appendChild(img);
           continue;
         }
-        const card = document.createElement('div');
-        card.className = 'att att-file';
-        card.title = f.name;
-        const isImage = (f.mime_type || '').startsWith('image/');
-        card.innerHTML = '<div class="att-icon' + (isImage ? ' att-icon-image' : '') + '">' + icon(isImage ? 'image' : 'file', 20) + '</div>';
-        const meta = document.createElement('div');
-        meta.className = 'att-meta';
-        const nameEl = document.createElement('div');
-        nameEl.className = 'att-name';
-        nameEl.textContent = f.name;
-        const typeEl = document.createElement('div');
-        typeEl.className = 'att-type';
-        typeEl.textContent = fileExt(f.name);
-        meta.appendChild(nameEl);
-        meta.appendChild(typeEl);
-        card.appendChild(meta);
-        row.appendChild(card);
+        // An image from history: show the picture itself (fetched through Rust with the token);
+        // fall back to the file card below if it can't be loaded.
+        if ((f.mime_type || '').startsWith('image/') && f.id) {
+          const img = document.createElement('img');
+          img.alt = f.name;
+          img.title = f.name;
+          img.className = 'msg-file-loading';
+          row.appendChild(img);
+          loadGenerated(f.id).then((src) => { img.src = src; img.classList.remove('msg-file-loading'); }, () => {
+            img.replaceWith(fileCard(f));
+          });
+          continue;
+        }
+        row.appendChild(fileCard(f));
       }
       turn.appendChild(row);
     }
@@ -310,6 +307,7 @@ class Chat {
     }
     this.thread.appendChild(turn);
   }
+
 
   _newAssistantTurn() {
     const turn = document.createElement('div');
@@ -345,18 +343,48 @@ class Chat {
     if (actions.innerHTML) turn.appendChild(actions);
   }
 
+  // A chat whose reply keeps running after you switch away lives in a hidden thread element;
+  // it must not touch the shared scroller or the empty-state of the chat being viewed.
+  _visible() {
+    return this.thread.isConnected && !this.thread.hidden;
+  }
+
   _updateEmpty() {
+    if (!this._visible()) return;
     this.main.classList.toggle('is-empty', this.thread.children.length === 0);
   }
 
   _isNearBottom() {
+    if (!this._visible()) return false;
     const el = this.scroller;
     return el.scrollHeight - el.scrollTop - el.clientHeight < 120;
   }
 
   _scrollToBottom() {
+    if (!this._visible()) return;
     this.scroller.scrollTop = this.scroller.scrollHeight;
   }
+}
+
+// A non-image attachment in a sent message (or an image that couldn't be loaded).
+function fileCard(f) {
+  const card = document.createElement('div');
+  card.className = 'att att-file';
+  card.title = f.name;
+  const isImage = (f.mime_type || '').startsWith('image/');
+  card.innerHTML = '<div class="att-icon' + (isImage ? ' att-icon-image' : '') + '">' + icon(isImage ? 'image' : 'file', 20) + '</div>';
+  const meta = document.createElement('div');
+  meta.className = 'att-meta';
+  const nameEl = document.createElement('div');
+  nameEl.className = 'att-name';
+  nameEl.textContent = f.name;
+  const typeEl = document.createElement('div');
+  typeEl.className = 'att-type';
+  typeEl.textContent = fileExt(f.name);
+  meta.appendChild(nameEl);
+  meta.appendChild(typeEl);
+  card.appendChild(meta);
+  return card;
 }
 
 // Same rule as Rust's join_reply: one text per message in arrival order; a text that is the
@@ -434,6 +462,16 @@ function streamSafe(text) {
     }
   });
   return text.slice(0, cut);
+}
+
+// The tool's own icon when ChatGPT sends one (e.g. the Hexey logo), else a fitting generic one.
+function stepIconHtml(ev) {
+  const own = ev.icon || '';
+  if (/^https:\/\//.test(own)) {
+    return '<img class="step-logo" src="' + escAttr(own) + '" alt="" width="16" height="16" referrerpolicy="no-referrer" draggable="false">';
+  }
+  if (own === 'globe' || own === 'code') return icon(own, 14);
+  return icon(stepIcon(ev), 14);
 }
 
 function stepIcon(ev) {

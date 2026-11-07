@@ -7,6 +7,20 @@ class Sidebar {
     this.items = [];
     this.filter = '';
     this.error = null;
+    this.busy = new Set();
+  }
+
+  // Chats with a reply still running (shown with a spinner, like chatgpt.com).
+  setBusy(id, on) {
+    if (!id) return;
+    if (on) this.busy.add(id); else this.busy.delete(id);
+    this.render();
+  }
+
+  // update_time as listed, so callers can tell whether a cached copy is still current.
+  updatedOf(id) {
+    const item = this.items.find((i) => i.id === id);
+    return item ? item.updated : null;
   }
 
   async refresh() {
@@ -58,6 +72,12 @@ class Sidebar {
       title.className = 'sb-chat-title';
       title.textContent = item.title || 'Untitled';
       row.appendChild(title);
+      if (this.busy.has(item.id)) {
+        const spin = document.createElement('span');
+        spin.className = 'sb-chat-busy';
+        spin.title = 'Working…';
+        row.appendChild(spin);
+      }
 
       const del = document.createElement('button');
       del.type = 'button';
