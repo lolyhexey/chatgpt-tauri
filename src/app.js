@@ -497,7 +497,8 @@ const voiceUi = {
   },
   level(v) { voiceOrb.style.setProperty('--level', v.toFixed(3)); },
   muted(on) {
-    voiceMuteBtn.innerHTML = icon(on ? 'mic-off' : 'mic', 18);
+    // chatgpt.com shows the crossed-out mic in both states; muted turns the button red.
+    if (!voiceMuteBtn.dataset.icon) { voiceMuteBtn.innerHTML = icon('mic-off', 16); voiceMuteBtn.dataset.icon = '1'; }
     voiceMuteBtn.classList.toggle('off', on);
     voiceMuteBtn.title = on ? 'Turn on microphone' : 'Turn off microphone';
   },
