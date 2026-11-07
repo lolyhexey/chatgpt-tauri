@@ -411,6 +411,57 @@ function renderPlusTools() {
 
 // ---------- Voice mode ----------
 
+// Which voice ChatGPT speaks with (chatgpt.com keeps this in Settings › Voice). Defaults to the
+// voice chosen in the account; a pick here is remembered on this computer.
+const voices = { list: [], selected: null, open: false };
+function voicePref() {
+  try { return localStorage.getItem('voice.name'); } catch (e) { return null; }
+}
+function currentVoice() {
+  const pick = voicePref();
+  if (pick && voices.list.some((v) => v.voice === pick)) return pick;
+  return voices.selected || 'juniper';
+}
+function renderPlusVoice() {
+  const box = $('plus-voice');
+  if (!voices.list.length) { box.innerHTML = ''; return; }
+  const now = currentVoice();
+  const nowName = (voices.list.find((v) => v.voice === now) || { name: now }).name;
+  let html = '<div class="menu-sep"></div>' +
+    '<button type="button" class="menu-item" data-voice-toggle><span data-icon="audio-lines"></span>' +
+    '<span class="menu-item-name">Voice</span><span class="menu-item-desc">' + escText(nowName) + '</span>' +
+    '<span class="menu-item-end">' + icon(voices.open ? 'chevron-down' : 'chevron-right', 14) + '</span></button>';
+  if (voices.open) {
+    html += voices.list.map((v) =>
+      '<button type="button" class="menu-item menu-sub" data-voice="' + escText(v.voice) + '">' +
+      '<span class="menu-item-logo">' + (v.voice === now ? icon('check', 16) : '') + '</span>' +
+      '<span class="menu-item-name">' + escText(v.name) + '</span>' +
+      (v.description ? '<span class="menu-item-desc">' + escText(v.description) + '</span>' : '') +
+      '</button>').join('');
+  }
+  box.innerHTML = html;
+  hydrateIcons(box);
+}
+$('plus-voice').addEventListener('click', (e) => {
+  e.stopPropagation();
+  if (e.target.closest('[data-voice-toggle]')) { voices.open = !voices.open; renderPlusVoice(); return; }
+  const row = e.target.closest('[data-voice]');
+  if (!row) return;
+  try { localStorage.setItem('voice.name', row.getAttribute('data-voice')); } catch (err) {}
+  voices.open = false;
+  renderPlusVoice();
+  closePlusMenu();
+  setStatus('Voice: ' + row.querySelector('.menu-item-name').textContent);
+});
+async function loadVoices() {
+  try {
+    const res = await window.__TAURI__.core.invoke('voices_cmd', { locale: navigator.language || 'en-US' });
+    voices.list = res.voices || [];
+    voices.selected = res.selected || null;
+  } catch (e) { console.warn('voices', e); }
+  renderPlusVoice();
+}
+
 // Like chatgpt.com: the chat page stays, the transcript appears as normal chat messages, a
 // large blue orb floats above the box (pulsing with ChatGPT's voice), and the box keeps its
 // "Type" field, mic toggle and blue ✕.
@@ -470,14 +521,19 @@ const voiceCall = new VoiceCall(voiceUi, {
 voiceBtn.addEventListener('click', () => {
   if (voiceCall.active) { voiceCall.end(false); return; }
   if (sending) return;
-  // A voice call is its own new chat (as on the web, which starts it from an empty chat).
-  if (view.running || view.convId || view.el.childElementCount) startNewChat();
+  // Like chatgpt.com: from an open chat the call continues it (the transcript is added after
+  // its messages); otherwise it starts a new chat. A chat that is still replying can't be
+  // continued, so that case starts a new one too.
+  const continueChat = !!(view.convId && !view.running);
+  if (!continueChat && (view.running || view.convId || view.el.childElementCount)) startNewChat();
   setStatus('Connecting…');
   voiceCall.start({
-    voice: 'juniper',
+    voice: currentVoice(),
     locale: navigator.language || 'en-US',
     timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
     timezoneOffsetMin: new Date().getTimezoneOffset(),
+    conversationId: continueChat ? view.convId : null,
+    parentMessageId: continueChat ? view.parentId : null,
   });
 });
 voiceMuteBtn.addEventListener('click', () => voiceCall.toggleMute());
@@ -485,6 +541,7 @@ voiceMuteBtn.addEventListener('click', () => voiceCall.toggleMute());
 function loadComposerMenus() {
   mentions.load().then(renderPlusTools);
   picker.load();
+  loadVoices();
 }
 
 plusBtn.addEventListener('click', (e) => {

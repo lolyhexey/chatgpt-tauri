@@ -469,6 +469,11 @@ async fn system_hints_cmd(state: tauri::State<'_, AppState>) -> Result<Vec<api::
     make_client(&state)?.list_system_hints().await
 }
 
+#[tauri::command]
+async fn voices_cmd(state: tauri::State<'_, AppState>, locale: String) -> Result<api::VoiceList, String> {
+    make_client(&state)?.list_voices(&locale).await
+}
+
 /// File name stem for a downloaded image: letters, digits, spaces, '-', '_' only.
 fn safe_stem(name: &str) -> String {
     let stem: String = name
@@ -580,6 +585,7 @@ pub fn run() {
             upload_bytes,
             download_image,
             system_hints_cmd,
+            voices_cmd,
             models_cmd,
             stop_generation,
             voice_connect,

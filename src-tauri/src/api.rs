@@ -648,6 +648,26 @@ impl ChatGptClient {
         Ok(parse_system_hints(&data))
     }
 
+    /// Voices for voice mode, as on chatgpt.com Settings › Voice
+    /// (GET /backend-api/settings/voices → {selected, voices:[{voice, name, description, …}]}).
+    pub async fn list_voices(&self, locale: &str) -> Result<VoiceList, String> {
+        let lang: String = locale.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-').take(20).collect();
+        let lang = if lang.is_empty() { "en-US".to_string() } else { lang };
+        let url = format!("{BASE_URL}/backend-api/settings/voices?spoken_language={lang}&voice_mode=wingman");
+        let resp = self
+            .client
+            .get(&url)
+            .headers(self.headers())
+            .send()
+            .await
+            .map_err(|e| format!("Loading voices failed: {e}"))?;
+        if !resp.status().is_success() {
+            return Err(format!("Loading voices failed (HTTP {}).", resp.status()));
+        }
+        let data: Value = resp.json().await.map_err(|e| format!("Invalid response: {e}"))?;
+        Ok(parse_voices(&data))
+    }
+
     pub async fn get_conversation(&self, id: &str) -> Result<Conversation, String> {
         let url = format!("{BASE_URL}/backend-api/conversation/{id}");
         let resp = self
@@ -860,17 +880,54 @@ fn apply_system_hints(body: &mut Value, picked: &[String], reasoning_effort: Opt
     }
 }
 
+#[derive(serde::Serialize, Clone, Debug, PartialEq)]
+pub struct VoiceOption {
+    pub voice: String,
+    pub name: String,
+    pub description: String,
+}
+
+#[derive(serde::Serialize, Clone, Debug, PartialEq)]
+pub struct VoiceList {
+    /// The voice chosen in the user's ChatGPT settings.
+    pub selected: Option<String>,
+    pub voices: Vec<VoiceOption>,
+}
+
+fn parse_voices(data: &Value) -> VoiceList {
+    let voices = data["voices"]
+        .as_array()
+        .map(|list| {
+            list.iter()
+                .filter_map(|v| {
+                    let voice = v["voice"].as_str().filter(|s| !s.is_empty())?.to_string();
+                    let name = v["name"].as_str().filter(|s| !s.is_empty()).unwrap_or(&voice).to_string();
+                    Some(VoiceOption { voice, name, description: v["description"].as_str().unwrap_or("").to_string() })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    VoiceList { selected: data["selected"].as_str().map(str::to_string), voices }
+}
+
 /// What the UI chooses for a voice call; everything else in the session is fixed.
+/// The UI sends camelCase keys (timezoneOffsetMin, conversationId, …).
 #[derive(serde::Deserialize, Clone, Debug, Default)]
+#[serde(rename_all = "camelCase")]
 pub struct VoiceSettings {
     pub voice: Option<String>,
     pub locale: Option<String>,
     pub timezone: Option<String>,
     pub timezone_offset_min: Option<i32>,
+    /// Continue an existing chat by voice (as chatgpt.com does from an open chat).
+    pub conversation_id: Option<String>,
+    pub parent_message_id: Option<String>,
+    /// Model behind the voice ("gpt-6" on the web).
+    pub backend_model: Option<String>,
 }
 
-/// The "session" form field of /realtime/wm. These 12 keys are what chatgpt.com sent
-/// (captured live); the server accepted a call with exactly these.
+/// The "session" form field of /realtime/wm: the 17 keys chatgpt.com sends (captured live),
+/// plus conversation_id/parent_message_id when continuing an open chat.
 fn voice_session_json(s: &VoiceSettings, session_id: &str) -> Value {
     let word = |v: &Option<String>, fallback: &str, max: usize| {
         v.as_deref()
@@ -878,7 +935,8 @@ fn voice_session_json(s: &VoiceSettings, session_id: &str) -> Value {
             .unwrap_or(fallback)
             .to_string()
     };
-    json!({
+    let id_ok = |v: &Option<String>| v.as_deref().filter(|x| !x.is_empty() && x.len() <= 100 && x.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')).map(str::to_string);
+    let mut session = json!({
         "requested_default_model": "",
         "voice": word(&s.voice, "juniper", 32),
         "voice_session_id": session_id,
@@ -890,8 +948,22 @@ fn voice_session_json(s: &VoiceSettings, session_id: &str) -> Value {
         "model_slug": "",
         "model_slug_advanced": "",
         "client_tools": [],
-        "history_and_training_disabled": false
-    })
+        "history_and_training_disabled": false,
+        // The other 5 keys chatgpt.com sends (values captured from the web; the
+        // conversation_mode kind is the one text messages use, inferred).
+        "conversation_mode": { "kind": "primary_assistant" },
+        "chat_mode": "chat",
+        "backend_model": word(&s.backend_model, "gpt-6", 64),
+        "enable_message_streaming": true,
+        "deprecate_celsius": true
+    });
+    if let Some(conv) = id_ok(&s.conversation_id) {
+        session["conversation_id"] = json!(conv);
+        if let Some(parent) = id_ok(&s.parent_message_id) {
+            session["parent_message_id"] = json!(parent);
+        }
+    }
+    session
 }
 
 /// A model family for the picker: its plain slug (sent for Instant) and its thinking slug
@@ -1694,11 +1766,25 @@ mod tests {
 
     #[test]
     fn voice_session_matches_the_web() {
-        let s = VoiceSettings { voice: Some("juniper".into()), locale: Some("th-TH".into()), timezone: Some("Asia/Bangkok".into()), timezone_offset_min: Some(-420) };
+        let s = VoiceSettings { voice: Some("juniper".into()), locale: Some("th-TH".into()), timezone: Some("Asia/Bangkok".into()), timezone_offset_min: Some(-420), ..Default::default() };
         let j = voice_session_json(&s, "id-1");
         let mut keys: Vec<&str> = j.as_object().unwrap().keys().map(String::as_str).collect();
         keys.sort();
-        assert_eq!(keys, ["client_tools", "history_and_training_disabled", "model_slug", "model_slug_advanced", "requested_default_model", "timezone", "timezone_offset_min", "user_locale", "voice", "voice_mode", "voice_session_id", "voice_status_request_id"]);
+        assert_eq!(keys, ["backend_model", "chat_mode", "client_tools", "conversation_mode", "deprecate_celsius", "enable_message_streaming", "history_and_training_disabled", "model_slug", "model_slug_advanced", "requested_default_model", "timezone", "timezone_offset_min", "user_locale", "voice", "voice_mode", "voice_session_id", "voice_status_request_id"], "the 17 keys chatgpt.com sends");
+        let cont = VoiceSettings { conversation_id: Some("6aef3bd0-88a8".into()), parent_message_id: Some("311a5b56-cc61".into()), ..Default::default() };
+        let j2 = voice_session_json(&cont, "id-3");
+        assert_eq!((j2["conversation_id"].as_str(), j2["parent_message_id"].as_str()), (Some("6aef3bd0-88a8"), Some("311a5b56-cc61")));
+        // Voice list, shaped as captured from /backend-api/settings/voices (names differ from ids).
+        let vl = parse_voices(&json!({ "selected": "juniper", "voices": [
+            { "voice": "orbit", "name": "Spruce", "description": "Calm and affirming", "gain_db": 0 },
+            { "voice": "bubbie", "name": "Bubbie", "description": "" },
+            { "name": "no id" } ] }));
+        assert_eq!(vl.selected.as_deref(), Some("juniper"));
+        assert_eq!(vl.voices.len(), 2, "entries without a voice id are skipped");
+        assert_eq!((vl.voices[0].voice.as_str(), vl.voices[0].name.as_str()), ("orbit", "Spruce"));
+        // The UI sends camelCase keys; they must not be silently dropped.
+        let from_ui: VoiceSettings = serde_json::from_value(json!({ "voice": "cove", "timezoneOffsetMin": -420, "conversationId": "abc-1", "parentMessageId": "def-2" })).unwrap();
+        assert_eq!((from_ui.timezone_offset_min, from_ui.conversation_id.as_deref(), from_ui.parent_message_id.as_deref()), (Some(-420), Some("abc-1"), Some("def-2")));
         assert_eq!(j["voice_mode"], "wingman");
         assert_eq!(j["timezone"], "Asia/Bangkok");
         assert_eq!(j["voice_status_request_id"], "id-1");

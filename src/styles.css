@@ -691,6 +691,9 @@ button { font: inherit; color: inherit; }
 .menu-item-desc { color: #8f8f8f; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .menu-item-logo { display: inline-flex; width: 18px; justify-content: center; flex: none; color: #afafaf; }
 .menu-sep { height: 1px; margin: 4px 6px; background: rgba(255, 255, 255, 0.08); }
+.menu-item-end { margin-left: auto; display: inline-flex; color: #8f8f8f; flex: none; }
+.menu-sub { padding-left: 22px; }
+.menu-sub .menu-item-logo { color: var(--text); }
 
 /* Thinking-effort / model picker (picker.js) */
 .model-wrap { position: relative; flex: none; margin-left: auto; }
