@@ -57,11 +57,23 @@ pub struct ChatResponse {
     pub full_text: String,
 }
 
+/// Live progress for one send, matched by the frontend on stream_id.
 #[derive(Serialize, Clone)]
-struct ChatDelta {
-    stream_id: String,
-    kind: &'static str,
-    delta: String,
+struct ChatDelta<'a> {
+    stream_id: &'a str,
+    #[serde(flatten)]
+    event: &'a StreamEvent,
+}
+
+/// Forward text and activity steps to the UI as they arrive.
+fn emit_live(app: &tauri::AppHandle, stream_id: Option<&str>, event: &StreamEvent) {
+    use tauri::Emitter;
+    if matches!(event, StreamEvent::Done { .. }) {
+        return;
+    }
+    if let Some(id) = stream_id {
+        let _ = app.emit("chat-delta", ChatDelta { stream_id: id, event });
+    }
 }
 
 fn reply_text(events: &[StreamEvent]) -> String {
@@ -79,21 +91,10 @@ async fn send_message(
     state: tauri::State<'_, AppState>,
     app: tauri::AppHandle,
 ) -> Result<ChatResponse, String> {
-    use tauri::Emitter;
     let mut client = make_client(&state)?;
     let attachments = attachments.unwrap_or_default();
     let events = client
-        .send_message_streaming(&text, &attachments, |ev| {
-            let (kind, delta) = match ev {
-                StreamEvent::Text { delta } => ("text", delta),
-                StreamEvent::Thinking { delta } => ("thinking", delta),
-                StreamEvent::Reasoning { delta } => ("reasoning", delta),
-                StreamEvent::Done { .. } => return,
-            };
-            if let Some(id) = &stream_id {
-                let _ = app.emit("chat-delta", ChatDelta { stream_id: id.clone(), kind, delta: delta.clone() });
-            }
-        })
+        .send_message_streaming(&text, &attachments, |ev| emit_live(&app, stream_id.as_deref(), ev))
         .await?;
 
     if let Some(conv_id) = &client.conversation_id {
@@ -112,6 +113,12 @@ pub struct GoalResponse {
     pub responses: Vec<ChatResponse>,
 }
 
+#[derive(Serialize, Clone)]
+struct GoalRound<'a> {
+    stream_id: &'a str,
+    round: u32,
+}
+
 const GOAL_DONE: &str = "[GOAL_COMPLETE]";
 const GOAL_MAX_ROUNDS: u32 = 20;
 
@@ -120,8 +127,11 @@ const GOAL_MAX_ROUNDS: u32 = 20;
 #[tauri::command]
 async fn start_goal(
     task: String,
+    stream_id: Option<String>,
     state: tauri::State<'_, AppState>,
+    app: tauri::AppHandle,
 ) -> Result<GoalResponse, String> {
+    use tauri::Emitter;
     let mut client = make_client(&state)?;
     let mut responses = Vec::new();
 
@@ -132,9 +142,19 @@ async fn start_goal(
             format!("The goal is not complete yet. Continue working on: \"{task}\"\n\nWhen it is fully complete and verified, end your reply with {GOAL_DONE}")
         };
 
-        let events = client.send_message(&prompt, &[]).await?;
+        if let Some(id) = &stream_id {
+            let _ = app.emit("goal-round", GoalRound { stream_id: id, round: round + 1 });
+        }
+        let events = client
+            .send_message_streaming(&prompt, &[], |ev| emit_live(&app, stream_id.as_deref(), ev))
+            .await?;
         let full_text = reply_text(&events);
         let is_complete = full_text.contains(GOAL_DONE);
+        // Keep the conversation pointer current so a failed later round still resumes here.
+        if let Some(conv_id) = &client.conversation_id {
+            *state.conversation_id.lock().unwrap() = Some(conv_id.clone());
+        }
+        *state.parent_message_id.lock().unwrap() = client.parent_message_id.clone();
         responses.push(ChatResponse { events, full_text });
 
         if is_complete { break; }

@@ -63,10 +63,16 @@ pub struct Conversation {
 pub enum StreamEvent {
     #[serde(rename = "text")]
     Text { delta: String },
-    #[serde(rename = "thinking")]
-    Thinking { delta: String },
-    #[serde(rename = "reasoning")]
-    Reasoning { delta: String },
+    /// An intermediate step ChatGPT shows while working (tool call, tool result,
+    /// thinking summary, "Thought for Ns" recap). Re-emitted with the same id as it updates.
+    #[serde(rename = "step")]
+    Step {
+        id: String,
+        kind: String,
+        title: String,
+        detail: String,
+        tool: String,
+    },
     #[serde(rename = "done")]
     Done {
         conversation_id: String,

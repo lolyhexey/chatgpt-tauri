@@ -265,6 +265,7 @@ impl ChatGptClient {
         }
     }
 
+    #[cfg(test)]
     pub async fn send_message(
         &mut self,
         text: &str,
@@ -679,6 +680,131 @@ pub fn parse_sse_line(line: &str) -> Option<(String, Value)> {
     Some((msg_id, data))
 }
 
+fn truncate_chars(s: &str, max: usize) -> String {
+    match s.char_indices().nth(max) {
+        Some((i, _)) => format!("{}…", &s[..i]),
+        None => s.to_string(),
+    }
+}
+
+fn friendly_tool(recipient: &str) -> String {
+    let r = recipient.to_ascii_lowercase();
+    if r.starts_with("web") || r.contains("search") && !r.contains("file") {
+        "Searching the web".into()
+    } else if r.starts_with("container") || r.starts_with("python") {
+        "Running code".into()
+    } else if r.contains("file") || r.contains("browser") {
+        "Reading files".into()
+    } else if r.starts_with("api_tool") || r.contains("mcp") || r.contains("connector") {
+        "Using a connector".into()
+    } else if r.contains("image") || r.contains("dalle") {
+        "Creating an image".into()
+    } else {
+        format!("Using {recipient}")
+    }
+}
+
+/// What a tool call is doing, for display: search queries, a command, or the raw request.
+fn tool_call_detail(msg: &Value) -> String {
+    let content = &msg["content"];
+    let raw = content["text"].as_str().map(str::to_string).unwrap_or_else(|| {
+        content["parts"].as_array().map(|p| p.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join("")).unwrap_or_default()
+    });
+    if let Ok(v) = serde_json::from_str::<Value>(&raw) {
+        let queries: Vec<String> = ["search_query", "queries", "query"]
+            .iter()
+            .filter_map(|k| v.get(*k))
+            .flat_map(|q| match q {
+                Value::Array(items) => items
+                    .iter()
+                    .filter_map(|i| i.get("q").or(Some(i)).and_then(|s| s.as_str()).map(str::to_string))
+                    .collect::<Vec<_>>(),
+                Value::String(s) => vec![s.clone()],
+                _ => vec![],
+            })
+            .collect();
+        if !queries.is_empty() {
+            return truncate_chars(&queries.join(" · "), 300);
+        }
+        if let Some(path) = v.get("path").and_then(|p| p.as_str()) {
+            let name = path.rsplit('/').next().unwrap_or(path);
+            let args = v.get("args").map(|a| a.to_string()).unwrap_or_default();
+            return truncate_chars(&format!("{name} {args}").trim().to_string(), 300);
+        }
+        return truncate_chars(&v.to_string(), 300);
+    }
+    truncate_chars(raw.trim(), 300)
+}
+
+/// Classify a non-reply message as a progress step: (kind, title, detail, tool).
+fn activity_step(msg: &Value) -> Option<(String, String, String, String)> {
+    let role = msg.pointer("/author/role").and_then(|r| r.as_str()).unwrap_or("");
+    let recipient = msg["recipient"].as_str().unwrap_or("all");
+    let content_type = msg["content"]["content_type"].as_str().unwrap_or("text");
+    let title = msg.pointer("/metadata/reasoning_title").and_then(|t| t.as_str()).unwrap_or("").to_string();
+    if msg.pointer("/metadata/is_visually_hidden_from_conversation").and_then(|h| h.as_bool()) == Some(true) {
+        return None;
+    }
+
+    if role == "assistant" && recipient != "all" {
+        let title = if title.is_empty() { friendly_tool(recipient) } else { title };
+        return Some(("tool_call".into(), title, tool_call_detail(msg), recipient.to_string()));
+    }
+    if role == "tool" {
+        let tool = msg.pointer("/author/name").and_then(|n| n.as_str()).unwrap_or("").to_string();
+        // The web search request itself streams empty; its queries arrive on a tool message.
+        let queries: Vec<&str> = msg.pointer("/metadata/search_model_queries/queries")
+            .and_then(|q| q.as_array())
+            .map(|q| q.iter().filter_map(|x| x.as_str()).collect())
+            .unwrap_or_default();
+        if !queries.is_empty() {
+            return Some(("tool_query".into(), title, truncate_chars(&queries.join("\n"), 400), tool));
+        }
+        let groups = msg.pointer("/metadata/search_result_groups").and_then(|g| g.as_array()).cloned().unwrap_or_default();
+        let sources: usize = groups.iter().map(|g| g["entries"].as_array().map_or(0, |e| e.len())).sum();
+        let detail = if sources > 0 {
+            let mut domains: Vec<&str> = Vec::new();
+            for d in groups.iter().filter_map(|g| g["domain"].as_str()) {
+                if !domains.contains(&d) {
+                    domains.push(d);
+                }
+            }
+            let shown = domains.iter().take(8).copied().collect::<Vec<_>>().join(", ");
+            let more = if domains.len() > 8 { format!(" +{}", domains.len() - 8) } else { String::new() };
+            format!("{sources} sources: {shown}{more}")
+        } else {
+            let content = &msg["content"];
+            let out = content["text"].as_str().map(str::to_string).unwrap_or_else(|| {
+                content["parts"].as_array()
+                    .map(|p| p.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(""))
+                    .unwrap_or_default()
+            });
+            truncate_chars(out.trim(), 400)
+        };
+        return Some(("tool_result".into(), title, detail, tool));
+    }
+    if role == "assistant" && content_type == "thoughts" {
+        let thoughts = msg["content"]["thoughts"].as_array().cloned().unwrap_or_default();
+        let latest = thoughts.iter().rev()
+            .filter_map(|x| x["summary"].as_str())
+            .find(|s| !s.trim().is_empty())
+            .unwrap_or("")
+            .to_string();
+        let detail: Vec<String> = thoughts.iter().flat_map(|x| {
+            [x["summary"].as_str(), x["content"].as_str()].into_iter().flatten()
+                .map(str::trim).filter(|s| !s.is_empty()).map(str::to_string).collect::<Vec<_>>()
+        }).collect();
+        return Some(("thought".into(), latest, truncate_chars(&detail.join("\n"), 1500), String::new()));
+    }
+    if role == "assistant" && content_type == "reasoning_recap" {
+        let recap = msg["content"]["content"].as_str().map(str::to_string).or_else(|| {
+            msg.pointer("/metadata/finished_duration_sec").and_then(|s| s.as_f64()).map(|s| format!("Thought for {}s", s.round() as u64))
+        });
+        return Some(("recap".into(), recap.unwrap_or_default(), String::new(), String::new()));
+    }
+    None
+}
+
 fn is_user_visible(msg: &Value) -> bool {
     msg.pointer("/author/role").and_then(|r| r.as_str()) == Some("assistant")
         && msg["recipient"].as_str().unwrap_or("all") == "all"
@@ -690,6 +816,7 @@ fn is_user_visible(msg: &Value) -> bool {
 struct SseParser {
     msg_texts: HashMap<String, String>,
     last_message_id: Option<String>,
+    step_sigs: HashMap<String, String>,
 }
 
 impl SseParser {
@@ -699,12 +826,18 @@ impl SseParser {
         if let Some(conv_id) = data.get("conversation_id").and_then(|c| c.as_str()) {
             client.conversation_id = Some(conv_id.to_string());
         }
-        // Tool output (file reads, searches) and assistant calls addressed to tools are
-        // internal steps, not part of the visible reply.
+        // Tool calls, tool output and thinking are shown as progress steps, never as reply text.
+        if let Some((kind, title, detail, tool)) = activity_step(msg) {
+            let sig = format!("{kind}\u{1}{title}\u{1}{detail}\u{1}{tool}");
+            if self.step_sigs.get(&msg_id) == Some(&sig) {
+                return None;
+            }
+            self.step_sigs.insert(msg_id.clone(), sig);
+            return Some(StreamEvent::Step { id: msg_id, kind, title, detail, tool });
+        }
         if !is_user_visible(msg) {
             return None;
         }
-        let content_type = msg["content"]["content_type"].as_str().unwrap_or("text");
         let parts = msg["content"]["parts"]
             .as_array()
             .map(|arr| arr.iter().filter_map(|p| p.as_str()).collect::<Vec<_>>().join(""))
@@ -720,11 +853,7 @@ impl SseParser {
         if let Some(model) = msg.pointer("/metadata/model_slug").and_then(|m| m.as_str()) {
             client.actual_model = Some(model.to_string());
         }
-        Some(match content_type {
-            "thoughts" => StreamEvent::Thinking { delta },
-            "reasoning_recap" => StreamEvent::Reasoning { delta },
-            _ => StreamEvent::Text { delta },
-        })
+        Some(StreamEvent::Text { delta })
     }
 
     fn finish(self, client: &mut ChatGptClient) -> Option<StreamEvent> {
@@ -784,6 +913,36 @@ mod tests {
         assert_eq!(text, "PELICAN-42");
         assert_eq!(client.conversation_id.as_deref(), Some("c1"));
         assert_eq!(client.parent_message_id, "a1");
+    }
+
+    #[test]
+    fn stream_reports_activity_steps() {
+        let mut client = ChatGptClient::new("t".into());
+        let sse = [
+            r#"data: {"message":{"id":"a0","author":{"role":"assistant"},"recipient":"web.run","content":{"content_type":"code","text":"{\"search_query\":[{\"q\":\"ECU คืออะไร\"}]}"},"metadata":{}}}"#,
+            r#"data: {"message":{"id":"a0","author":{"role":"assistant"},"recipient":"web.run","content":{"content_type":"code","text":"{\"search_query\":[{\"q\":\"ECU คืออะไร\"}]}"},"metadata":{}}}"#,
+            r#"data: {"message":{"id":"tq","author":{"role":"tool","name":"web.run"},"recipient":"all","content":{"content_type":"text","parts":[""]},"metadata":{"reasoning_title":"Searching the web","search_model_queries":{"queries":["ECU types","ECU tuning"]}}}}"#,
+            r#"data: {"message":{"id":"t0","author":{"role":"tool","name":"web.run"},"recipient":"all","content":{"content_type":"text","parts":[""]},"metadata":{"reasoning_title":"Searching 2 websites","search_result_groups":[{"domain":"bosch.com","entries":[{},{}]},{"domain":"wikipedia.org","entries":[{}]},{"domain":"bosch.com","entries":[]}]}}}"#,
+            r#"data: {"message":{"id":"th","author":{"role":"assistant"},"recipient":"all","content":{"content_type":"thoughts","thoughts":[{"summary":"Comparing ECU types","content":"Engine vs transmission units"}]}}}"#,
+            r#"data: {"message":{"id":"rc","author":{"role":"assistant"},"recipient":"all","content":{"content_type":"reasoning_recap","content":"Thought for 9s"}}}"#,
+            r#"data: {"message":{"id":"hd","author":{"role":"assistant"},"recipient":"bio","content":{"content_type":"text","parts":["x"]},"metadata":{"is_visually_hidden_from_conversation":true}}}"#,
+            r#"data: {"message":{"id":"a1","author":{"role":"assistant"},"recipient":"all","content":{"content_type":"text","parts":["ECU คือ"]}}}"#,
+        ]
+        .join("\n");
+        let events = parse_sse_stream(&sse, &mut client);
+        let steps: Vec<(String, String, String, String)> = events.iter().filter_map(|e| match e {
+            StreamEvent::Step { kind, title, detail, tool, .. } => Some((kind.clone(), title.clone(), detail.clone(), tool.clone())),
+            _ => None,
+        }).collect();
+        assert_eq!(steps, vec![
+            ("tool_call".into(), "Searching the web".into(), "ECU คืออะไร".into(), "web.run".into()),
+            ("tool_query".into(), "Searching the web".into(), "ECU types\nECU tuning".into(), "web.run".into()),
+            ("tool_result".into(), "Searching 2 websites".into(), "3 sources: bosch.com, wikipedia.org".into(), "web.run".into()),
+            ("thought".into(), "Comparing ECU types".into(), "Comparing ECU types\nEngine vs transmission units".into(), String::new()),
+            ("recap".into(), "Thought for 9s".into(), String::new(), String::new()),
+        ]);
+        let text: String = events.iter().filter_map(|e| match e { StreamEvent::Text { delta } => Some(delta.as_str()), _ => None }).collect();
+        assert_eq!(text, "ECU คือ");
     }
 
     #[test]
@@ -902,6 +1061,32 @@ mod tests {
         println!("text deltas: {}", arrivals.len());
         println!("first at {} ms, last at {} ms", arrivals.first().unwrap().0, arrivals.last().unwrap().0);
         assert!(arrivals.len() > 3, "expected several deltas, got {}", arrivals.len());
+    }
+
+    /// A question that needs a web search should report activity steps before the answer.
+    /// Run with `cargo test live_steps -- --ignored --nocapture`.
+    #[tokio::test]
+    #[ignore]
+    async fn live_steps() {
+        let token = crate::auth::load_token().expect("saved token");
+        let mut client = ChatGptClient::new(token);
+        client.temp_chat = true;
+        let mut steps = Vec::new();
+        let mut text_len = 0;
+        client
+            .send_message_streaming("Search the web: what is today's top headline on bbc.com? One sentence.", &[], |ev| match ev {
+                StreamEvent::Step { kind, title, detail, tool, .. } => {
+                    println!("STEP {kind} | {title} | {} | {tool}", detail.chars().take(80).collect::<String>());
+                    steps.push(kind.clone());
+                }
+                StreamEvent::Text { delta } => text_len += delta.len(),
+                _ => {}
+            })
+            .await
+            .expect("send");
+        println!("steps: {}, reply bytes: {text_len}", steps.len());
+        assert!(steps.iter().any(|k| k == "tool_call"), "expected a tool call step, got {steps:?}");
+        assert!(text_len > 0);
     }
 
     /// Like live_upload_and_ask, but for a document (my_files + retrieval indexing).

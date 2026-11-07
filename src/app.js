@@ -138,7 +138,7 @@ async function sendText(text, files = [], display = []) {
   let unlisten = null;
   try {
     unlisten = await window.__TAURI__.event.listen('chat-delta', (e) => {
-      if (e.payload.stream_id === streamId) chat.streamDelta(e.payload.kind, e.payload.delta);
+      if (e.payload.stream_id === streamId) chat.onLive(e.payload);
     });
     const response = await invoke('send_message', { text, attachments: files, streamId });
     const fullText = response.full_text ||
@@ -160,22 +160,46 @@ async function startGoal(task) {
   setGoalMode(false);
   setSending(true);
   chat.addUserMessage(task);
-  const notice = chat.addNotice('Goal mode · working autonomously…');
+  const notice = chat.addNotice('Goal mode · round 1');
   chat.startPending();
+  const streamId = 'g' + Date.now().toString(36) + Math.random().toString(36).slice(2);
+  // Round boundaries close the previous reply asynchronously; queue every live event
+  // behind them so the next round's text never lands in the previous reply.
+  let queue = Promise.resolve();
+  const later = (fn) => { queue = queue.then(fn, fn); };
+  const unlisten = [];
   try {
-    const result = await invoke('start_goal', { task });
+    unlisten.push(await window.__TAURI__.event.listen('chat-delta', (e) => {
+      if (e.payload.stream_id === streamId) later(() => chat.onLive(e.payload));
+    }));
+    unlisten.push(await window.__TAURI__.event.listen('goal-round', (e) => {
+      if (e.payload.stream_id !== streamId || e.payload.round < 2) return;
+      later(async () => {
+        await chat.completePending(stripGoalMarker(chat.currentText()));
+        notice.textContent = `Goal mode · round ${e.payload.round}`;
+        chat.addNotice(`Round ${e.payload.round} · asked ChatGPT to continue`);
+        chat.startPending();
+      });
+    }));
+    const result = await invoke('start_goal', { task, streamId });
+    await queue;
     notice.textContent = `${result.complete ? 'Goal complete' : 'Goal stopped'} · ${result.iterations} ${result.iterations === 1 ? 'round' : 'rounds'}`;
     const last = result.responses[result.responses.length - 1];
-    const text = last ? last.full_text.replace('[GOAL_COMPLETE]', '').trim() : '';
-    await chat.completePending(text);
+    await chat.completePending(last ? stripGoalMarker(last.full_text) : '');
     await afterTurn();
   } catch (e) {
+    await queue;
     notice.textContent = 'Goal failed';
     chat.failPending(`Goal error: ${e}`);
     handleAuthError(e);
   } finally {
+    unlisten.forEach((u) => u());
     setSending(false);
   }
+}
+
+function stripGoalMarker(text) {
+  return text.replace('[GOAL_COMPLETE]', '').trim();
 }
 
 function submitComposer() {
