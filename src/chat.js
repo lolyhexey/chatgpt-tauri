@@ -17,7 +17,7 @@ class Chat {
     this.pending = null;
     for (const msg of messages) {
       if (msg.role === 'user') this._userTurn(msg.content, msg.attachments || []);
-      else this._fillAssistant(this._newAssistantTurn(), msg.content, new Map((msg.sources || []).map((s) => [s.id, s])));
+      else this._fillAssistant(this._newAssistantTurn(), msg.content, replyContext(msg.sources, msg.images));
     }
     this._updateEmpty();
     this._scrollToBottom();
@@ -32,17 +32,18 @@ class Chat {
   startPending() {
     this._stopStream();
     this.activity = null;
-    this.sources = new Map();
+    this.ctx = replyContext();
     this.pending = this._newAssistantTurn();
     this.pending.innerHTML = '<div class="typing" aria-label="Thinking"></div>';
     this._scrollToBottom();
   }
 
-  // One live event from the backend: {type:'text', delta} or {type:'step', id, kind, title, detail, tool}.
+  // One live event from the backend: {type:'text', delta}, {type:'step', ...} or {type:'images', images}.
   onLive(ev) {
     if (!this.pending) return;
     if (ev.type === 'step') this._step(ev);
     else if (ev.type === 'text') this._text(ev.delta);
+    else if (ev.type === 'images') (ev.images || []).forEach((img) => this.ctx.images.set(img.query, img));
   }
 
   // Text so far in the current reply (used by Goal mode to close a round).
@@ -69,7 +70,7 @@ class Chat {
   // What ChatGPT is doing right now (searching, running code, calling a connector,
   // thinking). The header shows the latest step; clicking it lists every step.
   _step(ev) {
-    (ev.sources || []).forEach((s) => this.sources.set(s.id, s));
+    (ev.sources || []).forEach((s) => this.ctx.sources.set(s.id, s));
     const a = this._ensureActivity();
     a.el.classList.add('running');
     if (ev.kind === 'recap') {
@@ -171,7 +172,8 @@ class Chat {
     }
     s.shown = Math.min(next, s.target.length);
     const nearBottom = this._isNearBottom();
-    s.body.innerHTML = renderMarkdown(streamSafe(s.target.slice(0, s.shown)), this.sources);
+    s.body.innerHTML = renderMarkdown(streamSafe(s.target.slice(0, s.shown)), Object.assign({ streaming: true }, this.ctx));
+    hydrateMedia(s.body);
     if (nearBottom) this._scrollToBottom();
     if (s.shown < s.target.length) s.frame = requestAnimationFrame(() => this._revealStep());
   }
@@ -192,7 +194,7 @@ class Chat {
     this.pending = null;
     const activity = this._takeActivity();
     const nearBottom = this._isNearBottom();
-    this._fillAssistant(turn, text, this.sources);
+    this._fillAssistant(turn, text, this.ctx);
     if (activity) turn.insertBefore(activity, turn.firstChild);
     if (nearBottom) this._scrollToBottom();
   }
@@ -273,13 +275,14 @@ class Chat {
     return turn;
   }
 
-  _fillAssistant(turn, text, sources) {
+  _fillAssistant(turn, text, ctx) {
     turn.innerHTML = '';
     if (!text) return;
     turn._raw = text;
     const body = document.createElement('div');
     body.className = 'msg-assistant';
-    body.innerHTML = renderMarkdown(text, sources);
+    body.innerHTML = renderMarkdown(text, ctx);
+    hydrateMedia(body);
     const actions = document.createElement('div');
     actions.className = 'msg-actions';
     actions.innerHTML = '<button type="button" class="act-btn" data-action="copy-msg" title="Copy">' + icon('copy', 18) + '</button>';
@@ -300,6 +303,14 @@ class Chat {
   _scrollToBottom() {
     this.scroller.scrollTop = this.scroller.scrollHeight;
   }
+}
+
+// Data a reply's components refer to: citation sources and resolved images.
+function replyContext(sources, images) {
+  return {
+    sources: new Map((sources || []).map((s) => [s.id, s])),
+    images: new Map((images || []).map((i) => [i.query, i])),
+  };
 }
 
 // Partial text mid-stream: hide constructs that aren't complete yet so raw markup

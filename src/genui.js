@@ -39,7 +39,7 @@ function gxTokenize(src) {
     }
     if ((m = /^\d+(\.\d+)?/.exec(src.slice(i)))) { toks.push({ t: 'num', v: parseFloat(m[0]) }); i += m[0].length; continue; }
     if ((m = /^[A-Za-z_$][\w$]*/.exec(src.slice(i)))) { toks.push({ t: 'id', v: m[0] }); i += m[0].length; continue; }
-    if ((m = /^(===|!==|==|!=|<=|>=|&&|\|\||\?\?|=>)/.exec(src.slice(i)))) { toks.push({ t: 'op', v: m[0] }); i += m[0].length; continue; }
+    if ((m = /^(===|!==|==|!=|<=|>=|&&|\|\||\?\?|\?\.(?!\d)|=>)/.exec(src.slice(i)))) { toks.push({ t: 'op', v: m[0] }); i += m[0].length; continue; }
     if ('+-*!?:()[]{},.<>'.indexOf(c) >= 0) { toks.push({ t: 'op', v: c }); i++; continue; }
     throw new Error('unexpected character ' + c);
   }
@@ -47,7 +47,13 @@ function gxTokenize(src) {
 }
 
 function gxEval(src, scope) {
-  var toks = gxTokenize(src), p = 0;
+  return gxEvalTokens(gxTokenize(src), scope);
+}
+
+// Interprets a small, side-effect-free subset of JS expressions (never eval). Arrow functions
+// are only allowed as callbacks to the array methods below and run through this interpreter.
+function gxEvalTokens(toks, scope) {
+  var p = 0;
   function peek(v) { var t = toks[p]; return t && t.t === 'op' && t.v === v; }
   function eat(v) { if (!peek(v)) throw new Error('expected ' + v); p++; }
   function has(o, k) { return o != null && Object.prototype.hasOwnProperty.call(o, k); }
@@ -94,28 +100,90 @@ function gxEval(src, scope) {
   function args() {
     var list = [];
     eat('(');
-    if (!peek(')')) { list.push(expr()); while (peek(',')) { p++; list.push(expr()); } }
+    var arg = function () { return isLambdaStart() ? lambda() : expr(); };
+    if (!peek(')')) { list.push(arg()); while (peek(',')) { p++; list.push(arg()); } }
     eat(')');
     return list;
+  }
+  // `x => body` or `(x) => body` / `() => body`: capture the body's tokens up to the
+  // enclosing ',' ')' ']' '}' and evaluate them per call with the parameter bound.
+  function lambda() {
+    var params = [];
+    if (toks[p] && toks[p].t === 'id') {
+      params.push(toks[p++].v);
+    } else {
+      eat('(');
+      while (!peek(')')) {
+        var id = toks[p++];
+        if (!id || id.t !== 'id') throw new Error('bad parameter');
+        params.push(id.v);
+        if (peek(',')) p++;
+      }
+      eat(')');
+    }
+    eat('=>');
+    if (peek('{')) throw new Error('block bodies unsupported');
+    var start = p, depth = 0;
+    for (; p < toks.length; p++) {
+      var t = toks[p];
+      if (t.t !== 'op') continue;
+      if (t.v === '(' || t.v === '[' || t.v === '{') depth++;
+      else if (t.v === ')' || t.v === ']' || t.v === '}') { if (depth === 0) break; depth--; }
+      else if (t.v === ',' && depth === 0) break;
+    }
+    var body = toks.slice(start, p);
+    if (!body.length) throw new Error('empty arrow body');
+    return function () {
+      var s = Object.assign({}, scope);
+      for (var i = 0; i < params.length; i++) s[params[i]] = arguments[i];
+      return gxEvalTokens(body, s);
+    };
+  }
+  function isLambdaStart() {
+    var t = toks[p];
+    if (!t) return false;
+    if (t.t === 'id') return !!toks[p + 1] && toks[p + 1].v === '=>';
+    if (t.v !== '(') return false;
+    var q = p + 1;
+    while (toks[q] && (toks[q].t === 'id' || toks[q].v === ',')) q++;
+    return !!toks[q] && toks[q].v === ')' && !!toks[q + 1] && toks[q + 1].v === '=>';
+  }
+  function fn(a) {
+    if (typeof a !== 'function') throw new Error('callback expected');
+    return a;
   }
   function postfix() {
     var v = primary();
     for (;;) {
-      if (peek('.')) {
-        p++;
+      if (peek('.') || peek('?.')) {
+        var optional = toks[p++].v === '?.';
         var name = toks[p++];
         if (!name || name.t !== 'id') throw new Error('bad property');
+        if (optional && v == null) {
+          if (peek('(')) args();
+          v = undefined;
+          continue;
+        }
         if (peek('(')) {
           var a = args();
           if (v == null) throw new Error('call on null');
-          var s = v;
+          var s = v, arr = Array.isArray(s);
           switch (name.v) {
             case 'trim': v = String(s).trim(); break;
             case 'toLowerCase': v = String(s).toLowerCase(); break;
             case 'toUpperCase': v = String(s).toUpperCase(); break;
-            case 'includes': v = (Array.isArray(s) ? s : String(s)).indexOf(a[0]) >= 0; break;
-            case 'join': v = Array.isArray(s) ? s.join(a.length ? a[0] : ',') : String(s); break;
+            case 'includes': v = (arr ? s : String(s)).indexOf(a[0]) >= 0; break;
+            case 'indexOf': v = (arr ? s : String(s)).indexOf(a[0]); break;
+            case 'startsWith': v = String(s).indexOf(String(a[0])) === 0; break;
+            case 'join': v = arr ? s.join(a.length ? a[0] : ',') : String(s); break;
+            case 'slice': v = (arr ? s : String(s)).slice(a[0], a[1]); break;
             case 'toString': v = String(s); break;
+            case 'find': if (!arr) throw new Error('find on non-array'); v = s.find(fn(a[0])); break;
+            case 'findIndex': if (!arr) throw new Error('findIndex on non-array'); v = s.findIndex(fn(a[0])); break;
+            case 'filter': if (!arr) throw new Error('filter on non-array'); v = s.filter(fn(a[0])); break;
+            case 'map': if (!arr) throw new Error('map on non-array'); v = s.map(function (x, i) { return fn(a[0])(x, i); }); break;
+            case 'some': if (!arr) throw new Error('some on non-array'); v = s.some(fn(a[0])); break;
+            case 'every': if (!arr) throw new Error('every on non-array'); v = s.every(fn(a[0])); break;
             default: throw new Error('unsupported method ' + name.v);
           }
         } else if (name.v === 'length') {
@@ -251,6 +319,19 @@ function expandEach(text, state) {
   return text;
 }
 
+// A radio label may be plain text or markup (a box with a bold title and a secondary line).
+// Each non-empty line becomes one line of the label; DIL tags and inline markdown are rendered.
+// Output stays on one line so it remains inside the surrounding HTML block for marked.
+function radioLabel(text) {
+  var lines = text.replace(/<\/?box\b[^>]*>/g, '\n').split('\n')
+    .map(function (l) { return l.trim(); }).filter(Boolean);
+  if (lines.length === 1 && !/[<*_`]/.test(lines[0])) return escText(lines[0]);
+  return lines.map(function (l) {
+    var html = typeof marked !== 'undefined' && marked.parseInline ? marked.parseInline(transformDil(l)) : escText(l);
+    return '<span class="gx-label-line">' + html.replace(/\n/g, ' ') + '</span>';
+  }).join('');
+}
+
 function transformRadioGroups(text, state) {
   return text.replace(/<radio-group\b([^>]*)>([\s\S]*?)<\/radio-group>/g, function (_, attrs, inner) {
     var a = parseDilAttrs(attrs);
@@ -263,10 +344,10 @@ function transformRadioGroups(text, state) {
       var valueExpr = attrExpr(rAttrs, 'value');
       if (valueExpr) rv = gxTry(valueExpr, state, valueExpr);
       var text = label.trim();
-      var val = rv != null && rv !== '' ? String(rv) : text;
+      var val = rv != null && rv !== '' ? String(rv) : oneLine(text.replace(/<[^>]*>/g, ''));
       items += '<label class="gx-radio"><input type="radio" name="' + group + '" value="' + escAttr(val) + '"' +
         (current !== null && current === val ? ' checked' : '') + '><span class="gx-dot"></span><span class="gx-label">' +
-        escText(text) + '</span></label>';
+        radioLabel(text) + '</span></label>';
       return '';
     });
     return '\n\n<div class="gx-radio-group' + (a.direction === 'row' ? ' gx-row' : '') + '"' +
@@ -368,13 +449,36 @@ function transformTextExprs(text, state) {
   });
 }
 
+// {@body const [x, setX] = DIL.useState(init)} and {@body const name = expr} (data such as
+// a list of choices, possibly spanning lines). Each declaration is evaluated in order and removed.
+function readBodyDeclarations(text, state) {
+  var out = '', i = 0;
+  for (;;) {
+    var start = text.indexOf('{@body', i);
+    if (start < 0) break;
+    var close = findClose(text, start);
+    if (close < 0) break;
+    out += text.slice(i, start);
+    var decl = text.slice(start + 6, close).trim(), m;
+    if ((m = /^const\s+\[\s*(\w+)\s*,\s*\w+\s*\]\s*=\s*DIL\.useState\(([\s\S]*)\)$/.exec(decl))) {
+      state[m[1]] = gxTry(m[2].trim(), state, m[2].trim());
+    } else if ((m = /^(?:const|let)\s+(\w+)\s*=\s*([\s\S]+)$/.exec(decl))) {
+      var v = gxTry(m[2].trim().replace(/;$/, ''), state, undefined);
+      if (v !== undefined) state[m[1]] = v;
+    }
+    i = close + 1;
+    // Drop the rest of the declaration's line if it is otherwise empty.
+    var eol = text.indexOf('\n', i);
+    if (/^[ \t]*$/.test(text.slice(i, eol < 0 ? text.length : eol)) && /(^|\n)[ \t]*$/.test(out)) i = eol < 0 ? text.length : eol + 1;
+  }
+  return out + text.slice(i);
+}
+
 function transformGenUI(text) {
   if (!/DIL\.|GenUI\.|<radio-group|<textarea|<input|\{#(if|each)/.test(text)) return text;
   var state = {};
 
-  text = text.replace(/\{@body\s+const\s+\[\s*(\w+)\s*,\s*\w+\s*\]\s*=\s*DIL\.useState\(([^\n]*?)\)\s*\}/g,
-    function (_, name, init) { state[name] = gxTry(init.trim(), state, init.trim()); return ''; });
-  text = text.replace(/^[ \t]*\{@body[^\n]*\}[ \t]*$/gm, '');
+  text = readBodyDeclarations(text, state);
 
   text = expandEach(text, state);
   // Before radio groups: the radio transform emits its own <input type="radio"> tags.
@@ -434,7 +538,7 @@ function gxFallbackAnswer(root) {
   if (box && box.value.trim()) return box.value.trim();
   var sel = root.querySelector('.gx-radio input:checked');
   if (sel) {
-    var label = sel.closest('.gx-radio').querySelector('.gx-label');
+    var label = sel.closest('.gx-radio').querySelector('.gx-label-line, .gx-label');
     return label ? label.textContent.trim() : sel.value;
   }
   return '';

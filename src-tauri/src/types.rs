@@ -10,6 +10,23 @@ pub struct Message {
     /// Web search results this reply can cite with <Cite refs={["turn…search…"]}/>.
     #[serde(default)]
     pub sources: Vec<Source>,
+    /// Images ChatGPT resolved for this reply's <AsyncImage query="…"/> tags.
+    #[serde(default)]
+    pub images: Vec<GenImage>,
+}
+
+/// An image chatgpt.com found for an <AsyncImage query="…"/> component.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct GenImage {
+    /// The component's query, which is how the reply text refers to it.
+    pub query: String,
+    pub url: String,
+    pub thumbnail: String,
+    /// The page the image came from, and its host for the corner label.
+    pub source_url: String,
+    pub source_host: String,
+    pub title: String,
+    pub show_url: bool,
 }
 
 /// One web search result, keyed the way replies cite it: "turn{turn_index}{ref_type}{ref_index}".
@@ -19,6 +36,9 @@ pub struct Source {
     pub url: String,
     pub title: String,
     pub attribution: String,
+    /// Short site name when ChatGPT provides one ("App Store").
+    #[serde(default)]
+    pub name: String,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -87,6 +107,9 @@ pub enum StreamEvent {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         sources: Vec<Source>,
     },
+    /// Images resolved for <AsyncImage/> components in the reply.
+    #[serde(rename = "images")]
+    Images { images: Vec<GenImage> },
     #[serde(rename = "done")]
     Done {
         conversation_id: String,

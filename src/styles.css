@@ -678,7 +678,7 @@ button { font: inherit; color: inherit; }
 .dil-caption { display: block; font-size: 13px; line-height: 18px; color: var(--text-muted); }
 .msg-assistant .dil-box .dil-title { margin: 0; }
 .msg-assistant .dil-title-xl { font-size: 24px; line-height: 30px; }
-.msg-assistant .dil-title-2xl { font-size: 28px; line-height: 34px; }
+.msg-assistant .dil-title-2xl { font-size: 24px; line-height: 32px; }
 .dil-tabular { font-variant-numeric: tabular-nums; }
 .dil-color-secondary { color: var(--text-muted); }
 .dil-color-success { color: rgb(4, 184, 76); }
@@ -702,7 +702,7 @@ button { font: inherit; color: inherit; }
 .dil-divider { border: 0; border-top: 1px solid var(--border); margin: 12px 0; }
 .dil-list { margin: 8px 0; padding-left: 24px; }
 .dil-list-item { margin: 4px 0; }
-.dil-badge { display: inline-block; padding: 1px 8px; border-radius: 999px; background: var(--active); font-size: 12px; line-height: 20px; color: var(--text-muted); }
+.dil-badge { display: inline-block; padding: 0 7px; border-radius: 9999px; background: rgba(255, 255, 255, 0.1); font-size: 12px; font-weight: 500; line-height: 20px; color: #ededed; }
 .dil-header { font-weight: 600; }
 .dil-button { display: inline-flex; padding: 6px 14px; border-radius: 999px; background: var(--active); font-size: 14px; }
 
@@ -722,6 +722,11 @@ button { font: inherit; color: inherit; }
   text-align: left;
 }
 .gx-radio input { position: absolute; opacity: 0; width: 0; height: 0; margin: 0; }
+/* Two-line options (title + description): dot aligns with the title line */
+.gx-label { display: flex; flex-direction: column; min-width: 0; }
+.gx-label-line { display: block; }
+.gx-radio:has(.gx-label-line) { align-items: flex-start; }
+.gx-radio:has(.gx-label-line) .gx-dot { margin-top: 3px; }
 .gx-dot {
   width: 20px;
   height: 20px;
@@ -849,29 +854,83 @@ button { font: inherit; color: inherit; }
 }
 @keyframes shimmer { from { background-position: 100% 0; } to { background-position: -100% 0; } }
 
-/* Citation chips (chatgpt.com style): source name, "+N" for more sources */
+/* Citation chips (measured on chatgpt.com): #414141 pill, 12px, site badge + name + "+N" */
 .cite-chip {
   display: inline-flex;
   align-items: center;
-  gap: 3px;
+  gap: 4px;
+  height: 20px;
   margin: 0 2px;
-  padding: 1px 8px;
-  border-radius: 999px;
-  background: #2f2f2f;
-  color: #cdcdcd !important;
+  padding: 0 6px 0 4px;
+  border-radius: 9999px;
+  background: #414141;
+  color: #ededed !important;
   font-size: 12px;
-  font-weight: 500;
-  line-height: 18px;
+  font-weight: 400;
+  line-height: 20px;
   vertical-align: 1px;
   text-decoration: none !important;
   white-space: nowrap;
   cursor: pointer;
 }
-.cite-chip:hover { background: #424242; color: #fff !important; }
-.cite-more { opacity: 0.7; }
+.cite-chip:hover { background: #4e4e4e; color: #fff !important; }
+.cite-fav {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #ededed;
+  color: #414141;
+  font-size: 8px;
+  font-weight: 700;
+  line-height: 1;
+}
+.cite-more { opacity: 0.7; margin-left: 2px; }
+
+/* <Link/>: plain text with a dotted underline and an arrow */
+.msg-assistant a.dil-link { color: inherit; text-decoration: none; display: inline-flex; align-items: center; gap: 4px; }
+.dil-link-text, .entity {
+  text-decoration: underline dotted rgb(175, 175, 175);
+  text-underline-offset: 2px;
+}
+.msg-assistant a.dil-link:hover .dil-link-text { text-decoration-color: currentColor; }
+
+/* <AsyncImage/>: rounded frame on #212121; sizes come from the tag (hydrateMedia) */
+.gen-img { position: relative; overflow: hidden; border-radius: 16px; background: #212121; flex: none; max-width: 100%; margin: 0; }
+.gen-img img { display: block; width: 100%; height: 100%; margin: 0; border-radius: 0; }
+.gen-img img.fit-contain { object-fit: contain; height: auto; }
+.gen-img img.fit-cover { object-fit: cover; }
+.gen-img-loading { min-height: 60px; animation: busy 1.4s ease-in-out infinite; }
+.msg-assistant a.gen-img-src {
+  position: absolute;
+  left: 8px;
+  bottom: 8px;
+  height: 24px;
+  padding: 0 8px;
+  border-radius: 9999px;
+  background: rgba(98, 98, 98, 0.92);
+  color: #fff;
+  font-size: 12px;
+  line-height: 24px;
+  text-decoration: none;
+}
+
+/* Badge colors (measured on chatgpt.com) */
+.dil-badge-success { color: rgb(4, 184, 76) !important; background: rgba(4, 184, 76, 0.15) !important; }
+.dil-badge-info { color: rgb(51, 156, 255) !important; background: rgba(2, 133, 255, 0.13) !important; }
+.dil-badge-warning { color: rgb(255, 184, 0) !important; background: rgba(255, 184, 0, 0.15) !important; }
+.dil-badge-danger, .dil-badge-error { color: rgb(255, 102, 102) !important; background: rgba(255, 64, 64, 0.15) !important; }
+
+.dil-flex { flex: 1 1 0; min-width: 0; }
+.dil-nowrap { flex-wrap: nowrap; }
+.dil-divider-subtle { border-top-color: rgba(255, 255, 255, 0.08) !important; }
+/* Inside a box the box gap already spaces items; chatgpt.com rows sit 131px apart (90px image). */
+.msg-assistant .dil-box > hr.dil-divider { margin: 8px 0; }
 
 /* Icons inside button labels */
-.gx-button .dil-icon, .dil-button .dil-icon { display: inline-flex; vertical-align: -3px; margin-left: 6px; }
+.gx-button .dil-icon, .dil-button .dil-icon { display: inline-flex; vertical-align: -3px; margin-left: 6px; color: inherit; }
 
 /* Activity: what ChatGPT is doing (search, code, connectors, thinking) */
 .activity { margin: 0 0 12px; font-size: 14px; color: var(--text-secondary, #afafaf); }

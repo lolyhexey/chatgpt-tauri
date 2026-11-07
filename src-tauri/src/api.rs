@@ -363,7 +363,7 @@ impl ChatGptClient {
             while let Some(nl) = pending.iter().position(|&b| b == b'\n') {
                 let line: Vec<u8> = pending.drain(..=nl).collect();
                 let line = String::from_utf8_lossy(&line);
-                if let Some(ev) = parser.feed(line.trim_end_matches(['\r', '\n']), self) {
+                for ev in parser.feed(line.trim_end_matches(['\r', '\n']), self) {
                     on_event(&ev);
                     events.push(ev);
                 }
@@ -371,7 +371,7 @@ impl ChatGptClient {
         }
         if !pending.is_empty() {
             let line = String::from_utf8_lossy(&pending).to_string();
-            if let Some(ev) = parser.feed(line.trim_end(), self) {
+            for ev in parser.feed(line.trim_end(), self) {
                 on_event(&ev);
                 events.push(ev);
             }
@@ -515,6 +515,7 @@ impl ChatGptClient {
                             content: parts,
                             attachments,
                             sources: if role == "assistant" { turn_sources.clone() } else { Vec::new() },
+                            images: if role == "assistant" { genui_images(msg) } else { Vec::new() },
                         });
                     }
                 }
@@ -691,6 +692,46 @@ pub fn parse_sse_line(line: &str) -> Option<(String, Value)> {
     Some((msg_id, data))
 }
 
+fn http_url(v: &Value) -> Option<String> {
+    v.as_str().filter(|u| u.starts_with("https://") || u.starts_with("http://")).map(str::to_string)
+}
+
+/// Images chatgpt.com resolved for the reply's <AsyncImage/> components
+/// (metadata.model_dil_v2.appData.opGenui.componentResults), matched to tags by query.
+fn genui_images(msg: &Value) -> Vec<GenImage> {
+    let Some(results) = msg.pointer("/metadata/model_dil_v2/appData/opGenui/componentResults").and_then(|r| r.as_object()) else {
+        return Vec::new();
+    };
+    let mut out: Vec<GenImage> = Vec::new();
+    for result in results.values() {
+        if result["status"].as_str() != Some("resolved") {
+            continue;
+        }
+        let Some(img) = result.pointer("/state/images/0") else { continue };
+        let Some(query) = img["image_search_query"].as_str().filter(|q| !q.is_empty()) else { continue };
+        let Some(url) = http_url(&img["content_url"]).or_else(|| http_url(&img["thumbnail_url"])) else { continue };
+        if out.iter().any(|o| o.query == query) {
+            continue;
+        }
+        let source_url = http_url(&img["url"]).unwrap_or_default();
+        let source_host = source_url
+            .split("://").nth(1).unwrap_or("")
+            .split(['/', '?', '#']).next().unwrap_or("")
+            .trim_start_matches("www.")
+            .to_string();
+        out.push(GenImage {
+            query: query.to_string(),
+            thumbnail: http_url(&img["thumbnail_url"]).unwrap_or_else(|| url.clone()),
+            url,
+            source_url,
+            source_host,
+            title: truncate_chars(img["title"].as_str().unwrap_or(""), 200),
+            show_url: img["show_url"].as_bool().unwrap_or(false),
+        });
+    }
+    out
+}
+
 /// Search results carried by a message, with the ids replies use to cite them.
 fn search_sources(msg: &Value) -> Vec<Source> {
     let groups = msg.pointer("/metadata/search_result_groups").and_then(|g| g.as_array());
@@ -713,6 +754,7 @@ fn search_sources(msg: &Value) -> Vec<Source> {
                 url: url.to_string(),
                 title: truncate_chars(e["title"].as_str().unwrap_or(""), 200),
                 attribution: attribution.to_string(),
+                name: e["source_name"].as_str().unwrap_or("").to_string(),
             });
         }
     }
@@ -856,11 +898,27 @@ struct SseParser {
     msg_texts: HashMap<String, String>,
     last_message_id: Option<String>,
     step_sigs: HashMap<String, String>,
+    image_queries: std::collections::HashSet<String>,
 }
 
 impl SseParser {
-    fn feed(&mut self, line: &str, client: &mut ChatGptClient) -> Option<StreamEvent> {
-        let (msg_id, data) = parse_sse_line(line)?;
+    /// Events for one SSE line: at most one text/step event, plus any newly resolved images.
+    fn feed(&mut self, line: &str, client: &mut ChatGptClient) -> Vec<StreamEvent> {
+        let Some((msg_id, data)) = parse_sse_line(line) else { return Vec::new() };
+        let mut out: Vec<StreamEvent> = self.feed_message(msg_id, &data, client).into_iter().collect();
+        if is_user_visible(&data["message"]) {
+            let fresh: Vec<GenImage> = genui_images(&data["message"])
+                .into_iter()
+                .filter(|img| self.image_queries.insert(img.query.clone()))
+                .collect();
+            if !fresh.is_empty() {
+                out.push(StreamEvent::Images { images: fresh });
+            }
+        }
+        out
+    }
+
+    fn feed_message(&mut self, msg_id: String, data: &Value, client: &mut ChatGptClient) -> Option<StreamEvent> {
         let msg = &data["message"];
         if let Some(conv_id) = data.get("conversation_id").and_then(|c| c.as_str()) {
             client.conversation_id = Some(conv_id.to_string());
@@ -910,7 +968,7 @@ impl SseParser {
 #[cfg(test)]
 fn parse_sse_stream(text: &str, client: &mut ChatGptClient) -> Vec<StreamEvent> {
     let mut parser = SseParser::default();
-    let mut events: Vec<StreamEvent> = text.lines().filter_map(|l| parser.feed(l, client)).collect();
+    let mut events: Vec<StreamEvent> = text.lines().flat_map(|l| parser.feed(l, client)).collect();
     events.extend(parser.finish(client));
     events
 }
@@ -986,6 +1044,21 @@ mod tests {
     }
 
     #[test]
+    fn genui_images_match_queries() {
+        let msg: Value = serde_json::from_str(r#"{"metadata":{"model_dil_v2":{"appData":{"opGenui":{"componentResults":{
+            "a":{"status":"resolved","state":{"images":[{"image_search_query":"X logo","content_url":"https://images.openai.com/c1","thumbnail_url":"https://images.openai.com/t1","url":"https://www.x.com/i/1?ref=a","title":"X","show_url":true}]}},
+            "b":{"status":"pending","state":{"images":[{"image_search_query":"pending one","content_url":"https://images.openai.com/c2"}]}},
+            "c":{"status":"resolved","state":{"images":[{"image_search_query":"bad","content_url":"javascript:alert(1)"}]}}
+        }}}}}}"#).unwrap();
+        let images = genui_images(&msg);
+        assert_eq!(images.len(), 1, "only resolved images with http urls");
+        assert_eq!(images[0].query, "X logo");
+        assert_eq!(images[0].url, "https://images.openai.com/c1");
+        assert_eq!(images[0].source_host, "x.com");
+        assert!(images[0].show_url);
+    }
+
+    #[test]
     fn search_sources_use_cite_ids() {
         let msg: Value = serde_json::from_str(r#"{"metadata":{"search_result_groups":[
             {"domain":"x.com","entries":[
@@ -1008,7 +1081,7 @@ mod tests {
             format!(r#"data: {{"message":{{"id":"a","author":{{"role":"assistant"}},"recipient":"all","content":{{"content_type":"text","parts":["{text}"]}}}}}}"#)
         };
         let mut parser = SseParser::default();
-        let delta = |ev: Option<StreamEvent>| match ev { Some(StreamEvent::Text { delta }) => Some(delta), _ => None };
+        let delta = |evs: Vec<StreamEvent>| evs.into_iter().find_map(|e| match e { StreamEvent::Text { delta } => Some(delta), _ => None });
         assert_eq!(delta(parser.feed(&line("ab"), &mut client)).as_deref(), Some("ab"));
         // Not a prefix of the previous text: slicing at the old byte length would split a Thai char.
         assert_eq!(delta(parser.feed(&line("สวัสดีครับ"), &mut client)), None);

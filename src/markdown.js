@@ -27,13 +27,14 @@ function _initMarked() {
   marked.setOptions({ renderer: renderer, gfm: true, breaks: true });
 }
 
-// sources: optional Map of citation id -> {url, title, attribution} for <Cite refs> chips.
-function renderMarkdown(text, sources) {
+// ctx (optional): { sources: Map citeId -> source, images: Map query -> image, streaming: bool }
+// for chatgpt.com components (<Cite/>, <AsyncImage/>) that refer to data outside the text.
+function renderMarkdown(text, ctx) {
   if (!text) return '';
   _initMarked();
   if (!_markedReady) return escText(stripCites(text));
   try {
-    var html = marked.parse(transformMarkup(text, sources));
+    var html = marked.parse(transformMarkup(text, ctx));
     html = html.replace(/<table>/g, '<div class="table-wrap"><table>').replace(/<\/table>/g, '</table></div>');
     return sanitizeHtml(linkifyFilePaths(html));
   } catch (e) {
@@ -43,10 +44,10 @@ function renderMarkdown(text, sources) {
 }
 
 // Apply GenUI/DIL transforms only outside fenced code blocks.
-function transformMarkup(text, sources) {
+function transformMarkup(text, ctx) {
   return text.split(/(```[\s\S]*?(?:```|$)|~~~[\s\S]*?(?:~~~|$))/).map(function (seg, i) {
     if (i % 2 === 1) return seg;
-    seg = transformCites(seg, sources);
+    seg = transformCites(seg, ctx || {});
     seg = collapseRows(dedentDilBlocks(seg));
     seg = transformDil(transformGenUI(seg));
     // Indented HTML lines would otherwise become markdown code blocks.
@@ -75,37 +76,96 @@ function citeChip(ids, sources) {
   // A citation whose source we don't have is dropped rather than shown as raw markup.
   if (!found.length) return '';
   var first = found[0];
-  var name = first.attribution || first.url.replace(/^https?:\/\/(www\.)?/, '').split('/')[0];
+  var name = siteName(first);
   // One line per source. Titles can contain blank lines (PDFs), and a raw blank line inside an
   // attribute ends the markdown paragraph and breaks the tag, so collapse and encode them.
   var tip = found.map(function (s) {
     var title = (s.title || '').replace(/\s+/g, ' ').trim();
     return (title ? title + ' — ' : '') + s.url.replace(/^https?:\/\//, '').split('?')[0];
   }).join('\n');
-  return '<a class="cite-chip" href="' + escAttr(first.url) + '" title="' + escAttr(tip).replace(/\n/g, '&#10;') + '">' + escText(name) +
+  // chatgpt.com loads a favicon from Google here; a letter badge avoids sending cited sites to a third party.
+  return '<a class="cite-chip" href="' + escAttr(first.url) + '" title="' + escAttr(tip).replace(/\n/g, '&#10;') + '">' +
+    '<span class="cite-fav">' + escText(name.charAt(0).toUpperCase()) + '</span>' + escText(name) +
     (found.length > 1 ? '<span class="cite-more">+' + (found.length - 1) + '</span>' : '') + '</a>';
 }
 
-function transformCites(seg, sources) {
-  return seg
-    .replace(CITE_TAG, function (_, list) { return citeChip(citeIds(list), sources); })
-    .replace(CITE_PUA, function (_, list) { return citeChip(list.split('').filter(Boolean), sources); })
-    .replace(/<([A-Z][A-Za-z]+)\b([^<>]*?)\/>/g, function (_, tag, attrs) { return componentTag(tag, parseDilAttrs(attrs)); });
+// Short site name like chatgpt.com's chips: "App Store" when given, else from the host
+// ("transparency.x.com" -> "Transparency", "x.com" -> "X").
+function siteName(s) {
+  if (s.name) return s.name;
+  var host = (s.attribution || s.url.replace(/^https?:\/\//, '').split(/[\/?#]/)[0]).replace(/^www\./, '');
+  var label = host.split('.')[0] || host;
+  return label.charAt(0).toUpperCase() + label.slice(1);
 }
 
-// chatgpt.com's other inline components. AsyncImage needs ChatGPT's server-side image search,
-// which this app can't call, so it is dropped like any unknown component (never shown raw).
-function componentTag(tag, a) {
+function transformCites(seg, ctx) {
+  return seg
+    .replace(CITE_TAG, function (_, list) { return citeChip(citeIds(list), ctx.sources); })
+    .replace(CITE_PUA, function (_, list) { return citeChip(list.split('').filter(Boolean), ctx.sources); })
+    .replace(/<([A-Z][A-Za-z]+)\b([^<>]*?)\/>/g, function (_, tag, attrs) { return componentTag(tag, parseDilAttrs(attrs), ctx); });
+}
+
+// chatgpt.com's other components. Unknown ones are dropped, never shown raw.
+function componentTag(tag, a, ctx) {
   switch (tag) {
     case 'Link':
       if (!/^https?:\/\//i.test(a.url || '')) return escText(a.title || '');
-      return '<a href="' + escAttr(a.url) + '">' + escText(a.title || a.url) + '</a>';
+      return '<a class="dil-link" href="' + escAttr(a.url) + '"><span class="dil-link-text">' + escText(a.title || a.url) + '</span>' +
+        icon('arrow-up-right', 14) + '</a>';
     case 'Entity':
       return '<span class="entity"' + (a.disambig ? ' title="' + escAttr(a.disambig.replace(/\s+/g, ' ')) + '"' : '') + '>' +
         escText(a.value || '') + '</span>';
+    case 'AsyncImage':
+      return asyncImage(a, ctx);
     default:
       return '';
   }
+}
+
+// An image chatgpt.com already found for this query (metadata componentResults). While the reply
+// streams the result may not have arrived yet, so show an empty frame; afterwards drop it.
+function asyncImage(a, ctx) {
+  var img = ctx.images && ctx.images.get(a.query || '');
+  if (!img && !ctx.streaming) return '';
+  var small = /^\d+px$/.test(a.maxWidth || '') && parseInt(a.maxWidth, 10) <= 320;
+  var frame = ' data-ar="' + escAttr(a.aspectRatio || '') + '" data-w="' + escAttr(a.width || '') + '"' +
+    ' data-maxw="' + escAttr(a.maxWidth || '') + '" data-maxh="' + escAttr(a.maxHeight || '') + '"';
+  var inner = '';
+  if (img) {
+    inner = '<img src="' + escAttr(small ? img.thumbnail : img.url) + '" alt="' + escAttr(img.title || a.query || '') + '"' +
+      ' class="' + (a.fit === 'contain' ? 'fit-contain' : 'fit-cover') + '" loading="lazy">';
+    if (img.show_url && img.source_url) {
+      inner += '<a class="gen-img-src" href="' + escAttr(img.source_url) + '">' + escText(img.source_host) + '</a>';
+    }
+  }
+  return '\n\n<div class="gen-img' + (img ? '' : ' gen-img-loading') + '"' + frame + '>' + inner + '</div>\n\n';
+}
+
+// Apply <AsyncImage/> sizing after sanitizing (which strips style attributes). Only plain
+// numbers, px and % are accepted.
+function hydrateMedia(root) {
+  var len = function (v) {
+    if (/^\d+(\.\d+)?$/.test(v)) return v + 'px';
+    return /^\d+(\.\d+)?(px|%)$/.test(v) ? v : '';
+  };
+  root.querySelectorAll('.gen-img').forEach(function (el) {
+    var ar = (el.getAttribute('data-ar') || '').match(/^(\d+(?:\.\d+)?)\s*[:\/]\s*(\d+(?:\.\d+)?)$/);
+    var ratio = ar ? ar[1] + ' / ' + ar[2] : '';
+    var w = len(el.getAttribute('data-w') || ''), maxw = len(el.getAttribute('data-maxw') || ''), maxh = len(el.getAttribute('data-maxh') || '');
+    if (ratio) el.style.aspectRatio = ratio;
+    if (maxw) { el.style.width = maxw; el.style.maxWidth = '100%'; } else el.style.width = w || '100%';
+    // chatgpt.com only labels the source on large images, not on list thumbnails.
+    if (/px$/.test(maxw) && parseFloat(maxw) < 240) {
+      var label = el.querySelector('.gen-img-src');
+      if (label) label.remove();
+    }
+    if (maxh) el.style.maxHeight = maxh;
+    var img = el.querySelector('img');
+    if (!img) return;
+    // Like chatgpt.com: the image keeps the frame's aspect ratio; a max height crops the frame.
+    if (ratio) img.style.aspectRatio = ratio;
+    img.addEventListener('error', function () { el.remove(); }, { once: true });
+  });
 }
 
 // Plain-text form for copying: citations dropped, Link/Entity reduced to their text.
@@ -132,9 +192,11 @@ function dedentDilBlocks(seg) {
 }
 
 // A <row> is one flex line; join its lines so markdown inside it renders inline.
+// A row holding block content (a <box>, an image) is a horizontal box instead.
 function collapseRows(seg) {
-  return seg.replace(/<row\b[^>]*>[\s\S]*?<\/row>/g, function (block) {
-    return /<(box|grid|radio-group)\b/.test(block) ? block : block.split('\n').map(function (l) { return l.trim(); }).join(' ');
+  return seg.replace(/<row\b([^>]*)>([\s\S]*?)<\/row>/g, function (block, attrs, body) {
+    if (/<(box|grid|radio-group)\b|class="gen-img/.test(body)) return '<box direction="row"' + attrs + '>' + body + '</box>';
+    return block.split('\n').map(function (l) { return l.trim(); }).join(' ');
   });
 }
 
@@ -164,6 +226,8 @@ function dilTagToHtml(tag, attrStr) {
       if (a.padding) c.push('dil-p-' + a.padding);
       if (a.gap) c.push('dil-gap-' + a.gap);
       if (a.radius) c.push('dil-r-' + a.radius);
+      if (a.flex) c.push('dil-flex');
+      if (a.wrap === 'nowrap') c.push('dil-nowrap');
       if (/"success"/.test(attrStr)) c.push('dil-border-success');
       if (/"error"/.test(attrStr)) c.push('dil-border-error');
       return '\n\n<div class="' + c.join(' ') + '">\n\n';
@@ -193,13 +257,13 @@ function dilTagToHtml(tag, attrStr) {
       var svg = icon(a.name || '', a.size === 'xl' ? 24 : a.size === 'lg' ? 22 : a.size === 'sm' ? 16 : 18);
       return '<span class="dil-icon' + (a.color ? ' dil-icon-' + a.color : '') + '">' + (svg || '•') + '</span>';
     case 'divider':
-      return '\n\n<hr class="dil-divider">\n\n';
+      return '\n\n<hr class="dil-divider' + (a.color === 'subtle' ? ' dil-divider-subtle' : '') + '">\n\n';
     case 'list':
       return '\n\n<ul class="dil-list">\n\n';
     case 'list-item':
       return '<li class="dil-list-item">';
     case 'badge':
-      return '<span class="dil-badge">';
+      return '<span class="dil-badge' + (/^(success|info|warning|danger|error)$/.test(a.color || '') ? ' dil-badge-' + a.color : '') + '">';
     case 'header':
       return '\n\n<div class="dil-header">\n\n';
     default:
