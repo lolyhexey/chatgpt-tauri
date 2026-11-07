@@ -727,16 +727,21 @@ impl ChatGptClient {
             let mut turn_sources: Vec<Source> = Vec::new();
             // Images the image tool made, for the (often text-less) reply that follows them.
             let mut pending_generated: Vec<GeneratedImage> = Vec::new();
-            let flush_generated = |messages: &mut Vec<Message>, pending: &mut Vec<GeneratedImage>, id: &str| {
-                if !pending.is_empty() {
+            // Thinking, app calls and code runs since the last reply text, for the reply after them.
+            let mut pending_activity = ReplyActivity::default();
+            // Images or activity with no reply text after them (e.g. a stopped reply, or one
+            // still being written elsewhere) still show, as a text-less reply.
+            let flush_pending = |messages: &mut Vec<Message>, generated: &mut Vec<GeneratedImage>, activity: &mut ReplyActivity, id: &str| {
+                if !generated.is_empty() || !activity.is_empty() {
+                    let act = std::mem::take(activity);
                     messages.push(Message {
                         id: id.to_string(),
                         role: "assistant".into(),
-                        content: String::new(),
-                        attachments: Vec::new(),
-                        sources: Vec::new(),
-                        images: Vec::new(),
-                        generated: std::mem::take(pending),
+                        generated: std::mem::take(generated),
+                        recap: act.recap,
+                        steps: act.steps,
+                        runs: act.runs,
+                        ..Default::default()
                     });
                 }
             };
@@ -752,7 +757,9 @@ impl ChatGptClient {
                     pending_generated.extend(generated_images(msg));
                     if role == "user" {
                         turn_sources.clear();
-                        flush_generated(&mut messages, &mut pending_generated, &format!("{nid}-images"));
+                        flush_pending(&mut messages, &mut pending_generated, &mut pending_activity, &format!("{nid}-pending"));
+                    } else {
+                        collect_activity(msg, &mut pending_activity);
                     }
                     if role != "user" && !is_user_visible(msg) {
                         continue;
@@ -771,7 +778,9 @@ impl ChatGptClient {
                         })
                         .unwrap_or_default();
                     let generated = if role == "assistant" { std::mem::take(&mut pending_generated) } else { Vec::new() };
+                    // Thought and recap messages have no text: their activity waits for the reply.
                     if !parts.is_empty() || !attachments.is_empty() || !generated.is_empty() {
+                        let act = if role == "assistant" { std::mem::take(&mut pending_activity) } else { ReplyActivity::default() };
                         messages.push(Message {
                             id: msg["id"].as_str().unwrap_or("").to_string(),
                             role: role.to_string(),
@@ -780,11 +789,14 @@ impl ChatGptClient {
                             sources: if role == "assistant" { turn_sources.clone() } else { Vec::new() },
                             images: if role == "assistant" { genui_images(msg) } else { Vec::new() },
                             generated,
+                            recap: act.recap,
+                            steps: act.steps,
+                            runs: act.runs,
                         });
                     }
                 }
             }
-            flush_generated(&mut messages, &mut pending_generated, "trailing-images");
+            flush_pending(&mut messages, &mut pending_generated, &mut pending_activity, "trailing-pending");
         }
 
         Ok(Conversation {
@@ -1502,6 +1514,89 @@ fn activity_step(msg: &Value) -> Option<(String, String, String, String)> {
     None
 }
 
+/// A saved reply's activity, gathered from the messages before its text.
+#[derive(Default)]
+struct ReplyActivity {
+    recap: String,
+    steps: Vec<HistoryStep>,
+    runs: Vec<CodeRun>,
+}
+
+impl ReplyActivity {
+    fn is_empty(&self) -> bool {
+        self.recap.is_empty() && self.steps.is_empty() && self.runs.is_empty()
+    }
+}
+
+/// What chatgpt.com shows for a saved reply, measured on a reply that searched and ran code:
+/// the header is the reasoning_recap ("Worked for 13s"); opened, it lists the thought summaries
+/// ("Searched 3 websites", "Calculated 3.5% of …", marked with tool_summary_type); code the
+/// python tool ran shows as an "Analyzed" block with its result. App calls (connectors) are
+/// listed too. Tool calls that thoughts already summarise (web search, python) aren't.
+fn collect_activity(msg: &Value, act: &mut ReplyActivity) {
+    if msg.pointer("/metadata/is_visually_hidden_from_conversation").and_then(|h| h.as_bool()) == Some(true) {
+        return;
+    }
+    let role = msg.pointer("/author/role").and_then(|r| r.as_str()).unwrap_or("");
+    let recipient = msg["recipient"].as_str().unwrap_or("all");
+    let content_type = msg["content"]["content_type"].as_str().unwrap_or("text");
+    let text_of = |m: &Value| -> String {
+        m["content"]["text"].as_str().map(str::to_string).unwrap_or_else(|| {
+            m["content"]["parts"].as_array().map(|p| p.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join("")).unwrap_or_default()
+        })
+    };
+    match role {
+        "assistant" if content_type == "reasoning_recap" => {
+            if let Some((_, recap, _, _)) = activity_step(msg) {
+                if !recap.is_empty() {
+                    act.recap = truncate_chars(&recap, 80);
+                }
+            }
+        }
+        "assistant" if content_type == "thoughts" && recipient == "all" => {
+            let kind = msg.pointer("/metadata/tool_summary_type").and_then(|t| t.as_str())
+                .filter(|t| t.len() <= 20 && t.chars().all(|c| c.is_ascii_lowercase() || c == '_'))
+                .unwrap_or("thought");
+            let mut domains: Vec<String> = Vec::new();
+            for g in msg.pointer("/metadata/inline_cot_expandable_content/search_result_groups").and_then(|g| g.as_array()).into_iter().flatten() {
+                if let Some(d) = g["domain"].as_str() {
+                    if domains.len() < 8 && !domains.iter().any(|x| x == d) {
+                        domains.push(d.to_string());
+                    }
+                }
+            }
+            for t in msg["content"]["thoughts"].as_array().into_iter().flatten() {
+                let summary = t["summary"].as_str().unwrap_or("").trim();
+                if summary.is_empty() {
+                    continue;
+                }
+                let content = t["content"].as_str().unwrap_or("").trim();
+                act.steps.push(HistoryStep {
+                    kind: kind.to_string(),
+                    title: truncate_chars(summary, 200),
+                    detail: if content == summary { String::new() } else { truncate_chars(content, 2000) },
+                    icon: step_icon(msg),
+                    domains: std::mem::take(&mut domains),
+                });
+            }
+        }
+        "assistant" if recipient.starts_with("python") => {
+            act.runs.push(CodeRun { code: truncate_chars(text_of(msg).trim(), 20_000), output: String::new() });
+        }
+        "assistant" if recipient != "all" && (recipient.starts_with("api_tool") || recipient.contains("mcp") || recipient.contains("connector")) => {
+            if let Some((_, title, detail, _)) = activity_step(msg) {
+                act.steps.push(HistoryStep { kind: "tool_call".into(), title, detail, icon: step_icon(msg), domains: Vec::new() });
+            }
+        }
+        "tool" if content_type == "execution_output" && msg.pointer("/author/name").and_then(|n| n.as_str()).unwrap_or("").starts_with("python") => {
+            if let Some(run) = act.runs.last_mut() {
+                run.output = truncate_chars(text_of(msg).trim(), 4000);
+            }
+        }
+        _ => {}
+    }
+}
+
 fn is_user_visible(msg: &Value) -> bool {
     msg.pointer("/author/role").and_then(|r| r.as_str()) == Some("assistant")
         && msg["recipient"].as_str().unwrap_or("all") == "all"
@@ -1628,6 +1723,40 @@ fn parse_stream_status(data: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn saved_reply_activity_matches_the_web() {
+        // Message shapes as stored for a reply that searched, ran python and thought (measured).
+        let msgs = vec![
+            json!({ "author": { "role": "assistant" }, "recipient": "web.run", "content": { "content_type": "text", "parts": ["{}"] }, "metadata": { "reasoning_title": "Searching the web" } }),
+            json!({ "author": { "role": "tool", "name": "web.run" }, "recipient": "all", "content": { "content_type": "text", "parts": [""] }, "metadata": { "reasoning_title": "Searching 3 websites" } }),
+            json!({ "author": { "role": "assistant" }, "recipient": "all", "content": { "content_type": "thoughts", "thoughts": [{ "summary": "Searched 3 websites", "content": "" }] },
+                    "metadata": { "tool_summary_type": "web", "inline_cot_expandable_content": { "search_result_groups": [{ "domain": "a.example" }, { "domain": "b.example" }, { "domain": "a.example" }] } } }),
+            json!({ "author": { "role": "assistant" }, "recipient": "python", "content": { "content_type": "code", "text": "x = 2\nx * 3" }, "metadata": {} }),
+            json!({ "author": { "role": "tool", "name": "python" }, "recipient": "all", "content": { "content_type": "execution_output", "text": "6" }, "metadata": {} }),
+            json!({ "author": { "role": "assistant" }, "recipient": "all", "content": { "content_type": "thoughts", "thoughts": [{ "summary": "Calculated the result", "content": "Multiply" }] }, "metadata": { "tool_summary_type": "python" } }),
+            json!({ "author": { "role": "assistant" }, "recipient": "bio", "content": { "content_type": "text", "parts": ["x"] }, "metadata": { "is_visually_hidden_from_conversation": true } }),
+            json!({ "author": { "role": "assistant" }, "recipient": "api_tool.call_tool", "content": { "content_type": "code", "text": "{}" }, "metadata": { "tool_invoking_message": "Running app request" } }),
+            json!({ "author": { "role": "assistant" }, "recipient": "all", "content": { "content_type": "reasoning_recap", "content": "Worked for 13s" }, "metadata": { "finished_duration_sec": 13 } }),
+        ];
+        let mut act = ReplyActivity::default();
+        for m in &msgs {
+            collect_activity(m, &mut act);
+        }
+        assert_eq!(act.recap, "Worked for 13s");
+        let steps: Vec<(&str, &str, &str)> = act.steps.iter().map(|s| (s.kind.as_str(), s.title.as_str(), s.detail.as_str())).collect();
+        assert_eq!(steps, vec![
+            ("web", "Searched 3 websites", ""),
+            ("python", "Calculated the result", "Multiply"),
+            ("tool_call", "Running app request", "{}"),
+        ]);
+        assert_eq!(act.steps[0].domains, vec!["a.example", "b.example"]);
+        assert_eq!(act.runs, vec![CodeRun { code: "x = 2\nx * 3".into(), output: "6".into() }]);
+        // A recap without text falls back to the duration.
+        let mut act2 = ReplyActivity::default();
+        collect_activity(&json!({ "author": { "role": "assistant" }, "recipient": "all", "content": { "content_type": "reasoning_recap" }, "metadata": { "finished_duration_sec": 9.4 } }), &mut act2);
+        assert_eq!(act2.recap, "Thought for 9s");
+    }
 
     #[test]
     fn stream_status_reads_the_status_word() {

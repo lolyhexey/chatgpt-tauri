@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub struct Message {
     pub id: String,
     pub role: String,
@@ -16,6 +16,36 @@ pub struct Message {
     /// Images ChatGPT created for this reply (Create image tool).
     #[serde(default)]
     pub generated: Vec<GeneratedImage>,
+    /// What chatgpt.com's activity header says for this reply ("Worked for 13s", "Thought for 9s").
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub recap: String,
+    /// The lines under that header when it is opened (thought summaries, app calls).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub steps: Vec<HistoryStep>,
+    /// Code ChatGPT ran, shown as "Analyzed" blocks above the reply.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub runs: Vec<CodeRun>,
+}
+
+/// One line of a saved reply's activity, as chatgpt.com lists it under "Worked for …".
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+pub struct HistoryStep {
+    /// "thought", or the tool a summary is about ("web", "python"), or "tool_call".
+    pub kind: String,
+    pub title: String,
+    pub detail: String,
+    /// The tool's icon (as for live steps) and, for web searches, the sites' domains.
+    #[serde(default)]
+    pub icon: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub domains: Vec<String>,
+}
+
+/// Code run by ChatGPT (the python tool) and what it printed.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+pub struct CodeRun {
+    pub code: String,
+    pub output: String,
 }
 
 /// An image made by ChatGPT's image tool; the UI asks for a signed URL by file id.

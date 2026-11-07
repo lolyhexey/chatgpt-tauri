@@ -1330,6 +1330,38 @@ button.viewer-pill:hover { background: rgba(255, 255, 255, 0.16); }
   font: inherit;
   cursor: pointer;
 }
+/* A saved reply (history, measured on chatgpt.com): the header sits on a hairline divider;
+   code runs follow as open "Analyzed" blocks with their Result. */
+.activity.saved { margin: 0 0 6px; }
+.activity.saved .activity-head { display: flex; width: 100%; padding-bottom: 6px; border-bottom: 1px solid rgba(255, 255, 255, 0.1); }
+.activity.saved .activity-list { margin: 10px 0 4px; padding-left: 0; border-left: 0; }
+.analyzed { margin: 0 0 12px; font-size: 14px; color: var(--text-secondary, #afafaf); }
+.analyzed-head {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.analyzed-head:hover { color: var(--text); }
+.analyzed.open .activity-chevron { transform: rotate(90deg); }
+.analyzed:not(.open) .analyzed-body { display: none; }
+.analyzed-body { margin-top: 6px; color: var(--text); }
+.analyzed-result { padding: 4px 12px 0; }
+.analyzed-result-label { font-size: 12px; color: var(--text-secondary, #afafaf); margin-bottom: 4px; }
+.analyzed-result pre {
+  margin: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 320px;
+  overflow: auto;
+}
 .activity-head:disabled { cursor: default; }
 .activity-head:disabled .activity-chevron { display: none; }
 .activity-head:hover:not(:disabled) { color: var(--text); }

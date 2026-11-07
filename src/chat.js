@@ -42,7 +42,11 @@ class Chat {
     for (let i = same; i < list.length; i++) {
       const msg = list[i];
       if (msg.role === 'user') this._userTurn(msg.content, msg.attachments || []);
-      else this._fillAssistant(this._newAssistantTurn(), msg.content, replyContext(msg.sources, msg.images, msg.generated));
+      else {
+        const turn = this._newAssistantTurn();
+        this._fillAssistant(turn, msg.content, replyContext(msg.sources, msg.images, msg.generated));
+        addSavedActivity(turn, msg);
+      }
       this.thread.lastElementChild.dataset.sig = sigs[i];
     }
     this._updateEmpty();
@@ -498,6 +502,9 @@ function turnSig(msg) {
     (msg.generated || []).map((g) => g.file_id).join(','),
     (msg.sources || []).map((s) => s.id || s.url || '').join(','),
     (msg.images || []).map((i) => i.query || i.url || '').join(','),
+    msg.recap || '',
+    (msg.steps || []).map((s) => s.title + '/' + s.detail.length).join(','),
+    (msg.runs || []).map((r) => r.code.length + '/' + r.output.length).join(','),
   ].join('\u0001');
   let h = 5381;
   for (let i = 0; i < parts.length; i++) h = ((h * 33) ^ parts.charCodeAt(i)) >>> 0;
@@ -515,8 +522,12 @@ function mergeReplies(messages) {
       prev.sources = prev.sources.concat(m.sources || []);
       prev.images = prev.images.concat(m.images || []);
       prev.generated = prev.generated.concat((m.generated || []).filter((g) => !prev.generated.some((x) => x.file_id === g.file_id)));
+      prev.steps = prev.steps.concat(m.steps || []);
+      prev.runs = prev.runs.concat(m.runs || []);
+      if (m.recap) prev.recap = m.recap;
     } else {
-      out.push({ ...m, sources: (m.sources || []).slice(), images: (m.images || []).slice(), generated: (m.generated || []).slice() });
+      out.push({ ...m, sources: (m.sources || []).slice(), images: (m.images || []).slice(), generated: (m.generated || []).slice(),
+        steps: (m.steps || []).slice(), runs: (m.runs || []).slice(), recap: m.recap || '' });
     }
   }
   return out;
@@ -598,6 +609,65 @@ function streamSafe(text) {
   });
   return text.slice(0, cut);
 }
+
+// A saved reply's activity, as chatgpt.com shows it in history (measured): a closed header
+// with the recap ("Worked for 13s ›") that opens to the thought summaries and app calls, then
+// each code run as an open "Analyzed ⌄" block with its Result, above the reply text.
+function addSavedActivity(turn, msg) {
+  const steps = msg.steps || [];
+  const runs = msg.runs || [];
+  if (!msg.recap && !steps.length && !runs.length) return;
+  const frag = document.createDocumentFragment();
+  if (msg.recap || steps.length) {
+    const el = document.createElement('div');
+    el.className = 'activity saved';
+    el.innerHTML = '<button type="button" class="activity-head" data-action="toggle-activity"><span class="activity-label"></span>' +
+      icon('chevron-right', 14, 'activity-chevron') + '</button><div class="activity-list" hidden></div>';
+    el.querySelector('.activity-label').textContent = msg.recap || steps[steps.length - 1].title;
+    if (!steps.length) el.querySelector('.activity-head').disabled = true;
+    const list = el.querySelector('.activity-list');
+    for (const s of steps) {
+      const item = document.createElement('div');
+      item.className = 'activity-step';
+      item.innerHTML = '<div class="step-head"><span class="step-icon"></span><span class="step-title"></span></div><div class="step-detail"></div>';
+      const tool = s.kind === 'web' ? 'web' : s.kind === 'python' ? 'python' : s.kind === 'tool_call' ? 'api_tool' : '';
+      item.querySelector('.step-icon').innerHTML = stepIconHtml({ kind: tool ? 'tool_call' : 'thought', tool, icon: s.icon });
+      item.querySelector('.step-title').textContent = s.title;
+      const detail = item.querySelector('.step-detail');
+      detail.textContent = s.detail || (s.domains || []).join(', ');
+      detail.hidden = !detail.textContent;
+      list.appendChild(item);
+    }
+    frag.appendChild(el);
+  }
+  for (const r of runs) {
+    const box = document.createElement('div');
+    box.className = 'analyzed open';
+    box.innerHTML = '<button type="button" class="analyzed-head" data-action="toggle-analyzed">Analyzed' +
+      icon('chevron-right', 14, 'activity-chevron') + '</button><div class="analyzed-body"></div>';
+    const body = box.querySelector('.analyzed-body');
+    // A fence longer than any backtick run in the code, so the code can't end it early.
+    const longest = Math.max(0, ...(r.code.match(/`+/g) || []).map((m) => m.length));
+    const fence = '`'.repeat(Math.max(3, longest + 1));
+    body.innerHTML = renderMarkdown(fence + 'python\n' + r.code + '\n' + fence, replyContext());
+    if (r.output) {
+      const res = document.createElement('div');
+      res.className = 'analyzed-result';
+      res.innerHTML = '<div class="analyzed-result-label">Result</div><pre></pre>';
+      res.querySelector('pre').textContent = r.output;
+      body.appendChild(res);
+    }
+    frag.appendChild(box);
+  }
+  turn.insertBefore(frag, turn.firstChild);
+}
+
+document.addEventListener('click', (e) => {
+  const head = e.target.closest && e.target.closest('[data-action="toggle-analyzed"]');
+  if (!head) return;
+  const box = head.closest('.analyzed');
+  box.classList.toggle('open');
+});
 
 // The tool's own icon when ChatGPT sends one (e.g. the Hexey logo), else a fitting generic one.
 function stepIconHtml(ev) {

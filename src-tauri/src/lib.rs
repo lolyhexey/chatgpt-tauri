@@ -132,6 +132,7 @@ fn stored_reply(conv: &Conversation) -> Option<Message> {
         sources: Vec::new(),
         images: Vec::new(),
         generated: Vec::new(),
+        ..Default::default()
     };
     for m in &replies {
         merged.sources.extend(m.sources.iter().cloned());
