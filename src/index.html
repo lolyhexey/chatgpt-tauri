@@ -76,8 +76,9 @@
                 <div class="plus-wrap">
                   <button type="button" class="icon-btn composer-plus" id="plus-btn" title="Add files and more"><span data-icon="plus" data-size="20"></span></button>
                   <div class="plus-menu" id="plus-menu" hidden>
-                    <button type="button" class="menu-item" id="attach-btn"><span data-icon="paperclip"></span>Add photos &amp; files</button>
-                    <button type="button" class="menu-item" id="goal-menu-btn"><span data-icon="target"></span>Goal mode</button>
+                    <button type="button" class="menu-item" id="attach-btn"><span data-icon="paperclip"></span><span class="menu-item-name">Add photos &amp; files</span><span class="menu-item-desc">Upload from computer</span></button>
+                    <button type="button" class="menu-item" id="goal-menu-btn"><span data-icon="target"></span><span class="menu-item-name">Goal mode</span><span class="menu-item-desc">Keep working until done</span></button>
+                    <div id="plus-tools"></div>
                   </div>
                 </div>
                 <span class="goal-chip" id="goal-chip" hidden>
@@ -86,6 +87,10 @@
                 </span>
                 <span class="mention-chips" id="mention-chips" hidden></span>
                 <textarea id="chat-input" rows="1" placeholder="Ask ChatGPT" spellcheck="false"></textarea>
+                <div class="model-wrap">
+                  <button type="button" class="model-btn" id="model-btn" title="Thinking effort" aria-haspopup="true"><span id="model-label">High</span><span data-icon="chevron-down" data-size="14"></span></button>
+                  <div class="model-panel" id="model-panel" hidden></div>
+                </div>
                 <button type="button" class="send-btn" id="send-btn" title="Send"><span data-icon="arrow-up" data-size="18"></span></button>
               </div>
             </div>
@@ -109,6 +114,7 @@
   <script src="genui.js"></script>
   <script src="markdown.js"></script>
   <script src="mentions.js"></script>
+  <script src="picker.js"></script>
   <script src="chat.js"></script>
   <script src="viewer.js"></script>
   <script src="sidebar.js"></script>

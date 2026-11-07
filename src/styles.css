@@ -618,6 +618,82 @@ button { font: inherit; color: inherit; }
 }
 .menu-item:hover { background: rgba(255, 255, 255, 0.08); }
 
+/* "+" menu: same tool list as "@" (name + gray description), scrollable like chatgpt.com */
+.plus-menu { width: min(560px, calc(100vw - 48px)); max-height: 360px; overflow-y: auto; }
+.menu-item { white-space: nowrap; color: var(--text); }
+.menu-item-name { font-weight: 500; flex: none; }
+.menu-item-desc { color: #8f8f8f; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.menu-item-logo { display: inline-flex; width: 18px; justify-content: center; flex: none; color: #afafaf; }
+.menu-sep { height: 1px; margin: 4px 6px; background: rgba(255, 255, 255, 0.08); }
+
+/* Thinking-effort / model picker (picker.js) */
+.model-wrap { position: relative; flex: none; margin-left: auto; }
+.model-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 36px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 9999px;
+  background: none;
+  color: #afafaf;
+  font: inherit;
+  font-size: 14px;
+  cursor: pointer;
+}
+.model-btn:hover, .model-btn.open { background: rgba(255, 255, 255, 0.08); color: var(--text); }
+.model-panel {
+  position: absolute;
+  right: 0;
+  bottom: 44px;
+  z-index: 25;
+  width: 220px;
+  padding: 10px 12px 12px;
+  border-radius: 16px;
+  background: #2a2a2a;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.5), inset 0 0 0 1px rgba(255, 255, 255, 0.06);
+}
+.model-panel[hidden] { display: none; }
+.model-level {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  width: 100%;
+  padding: 2px 0 8px;
+  border: 0;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.effort-range { width: 100%; margin: 0; accent-color: rgb(44, 103, 197); cursor: pointer; }
+.effort-ticks { display: flex; justify-content: space-between; margin-top: 4px; font-size: 11px; color: #8f8f8f; }
+.model-list { margin-top: 10px; padding-top: 8px; border-top: 1px solid rgba(255, 255, 255, 0.08); }
+.model-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  height: 34px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  font-size: 14px;
+  cursor: pointer;
+}
+.model-row:hover { background: rgba(255, 255, 255, 0.08); }
+.model-empty { padding: 6px 8px; color: #8f8f8f; font-size: 13px; }
+/* In multi-line mode the picker sits with the send button on the bottom row. */
+.composer.multiline .model-wrap { margin-left: auto; }
+.composer.multiline .send-btn { margin-left: 0; }
+
 /* Drag-and-drop overlay */
 .drop-overlay {
   position: fixed;
@@ -855,8 +931,14 @@ button { font: inherit; color: inherit; }
   cursor: pointer;
 }
 .gx-button.gx-block { width: 100%; }
+.gx-button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
 .gx-button:hover:not(:disabled) { background: #fff; }
 .gx-button:disabled { opacity: 0.4; cursor: default; }
+/* color="secondary" / variant="outline": dark outlined pill */
+.gx-button.gx-secondary { background: transparent; color: var(--text); box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.15); }
+.gx-button.gx-secondary:hover:not(:disabled) { background: rgba(255, 255, 255, 0.08); }
+.gx-button.gx-sm { height: 32px; padding: 0 12px; font-size: 13px; }
+.gx-button.gx-copied { color: #4ade80; }
 
 .gx-answered .gx-radio { cursor: default; }
 
@@ -1118,7 +1200,8 @@ button.viewer-pill:hover { background: rgba(255, 255, 255, 0.16); }
 .msg-assistant .dil-box > hr.dil-divider { margin: 8px 0; }
 
 /* Icons inside button labels */
-.gx-button .dil-icon, .dil-button .dil-icon { display: inline-flex; vertical-align: -3px; margin-left: 6px; color: inherit; }
+.gx-button .dil-icon, .dil-button .dil-icon { display: inline-flex; vertical-align: -3px; color: inherit; }
+.dil-button .dil-icon { margin: 0 4px; }
 
 /* Activity: what ChatGPT is doing (search, code, connectors, thinking) */
 .activity { margin: 0 0 12px; font-size: 14px; color: var(--text-secondary, #afafaf); }

@@ -411,6 +411,15 @@ function buttonLabel(label) {
   }).join('');
 }
 
+// Source of the argument in `name(arg)` inside an onClick expression, or null.
+function callArg(expr, name) {
+  var at = expr.indexOf(name + '(');
+  if (at < 0) return null;
+  var open = at + name.length;
+  var close = findClose(expr, open);
+  return close > open ? expr.slice(open + 1, close).trim() : null;
+}
+
 function transformButtons(text) {
   var out = '', i = 0;
   for (;;) {
@@ -423,15 +432,20 @@ function transformButtons(text) {
     var label = text.slice(end + 1, close).trim();
     out += text.slice(i, start);
     var onClick = attrExpr(attrs, 'onClick') || '';
-    var callAt = onClick.indexOf('GenUI.issueNewTurn(');
-    if (callAt >= 0) {
-      var open = callAt + 'GenUI.issueNewTurn'.length;
-      var closeParen = findClose(onClick, open);
-      var turnExpr = closeParen > open ? onClick.slice(open + 1, closeParen).trim() : '';
+    var a = parseDilAttrs(attrs);
+    // Look: block (full width), color="secondary" / variant="outline" (dark outlined), size="sm".
+    var cls = 'gx-button' + (/(^|\s)block(\s|=|\/|$)/.test(attrs) ? ' gx-block' : '') +
+      (a.color === 'secondary' || a.variant === 'outline' || a.variant === 'secondary' ? ' gx-secondary' : '') +
+      (a.size === 'sm' || a.size === 'xs' ? ' gx-sm' : '');
+    var turnArg = callArg(onClick, 'GenUI.issueNewTurn');
+    var copyArg = callArg(onClick, 'GenUI.copy');
+    if (turnArg !== null) {
       var disabledExpr = attrExpr(attrs, 'disabled');
-      out += '<button type="button" class="gx-button' + (/(^|\s)block(\s|=|\/|$)/.test(attrs) ? ' gx-block' : '') +
-        '" data-gx-submit="1" data-gx-turn="' + escAttr(turnExpr) + '"' +
+      out += '<button type="button" class="' + cls + '" data-gx-submit="1" data-gx-turn="' + escAttr(turnArg) + '"' +
         (disabledExpr ? ' data-gx-disabled="' + escAttr(disabledExpr) + '"' : '') + '>' + buttonLabel(label) + '</button>';
+    } else if (copyArg !== null) {
+      // GenUI.copy(text): copy to the clipboard, nothing is sent.
+      out += '<button type="button" class="' + cls + '" data-gx-copy="' + escAttr(copyArg) + '">' + buttonLabel(label) + '</button>';
     } else {
       out += '<span class="dil-button">' + buttonLabel(label) + '</span>';
     }
@@ -562,6 +576,21 @@ document.addEventListener('change', function (e) {
 
 document.addEventListener('input', function (e) {
   if (e.target.matches && e.target.matches('.gx-textarea, .gx-input')) gxSync(gxRoot(e.target));
+});
+
+// GenUI.copy(expr): evaluate with the widget's state and copy; the button shows "Copied" briefly.
+document.addEventListener('click', function (e) {
+  var btn = e.target.closest && e.target.closest('[data-gx-copy]');
+  if (!btn) return;
+  var value = gxTry(btn.getAttribute('data-gx-copy'), gxState(gxRoot(btn)), undefined);
+  if (value == null || typeof value === 'object') return;
+  copyToClipboard(String(value)).then(function () {
+    if (btn._label === undefined) btn._label = btn.innerHTML;
+    btn.innerHTML = icon('check', 16) + ' Copied';
+    btn.classList.add('gx-copied');
+    clearTimeout(btn._timer);
+    btn._timer = setTimeout(function () { btn.innerHTML = btn._label; btn.classList.remove('gx-copied'); }, 1500);
+  }, function (err) { console.error('copy failed', err); });
 });
 
 document.addEventListener('click', function (e) {

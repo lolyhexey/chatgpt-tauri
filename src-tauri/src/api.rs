@@ -21,6 +21,8 @@ pub struct ChatGptClient {
     /// Tools/apps picked with "@" in the composer for the next message, as chatgpt.com sends
     /// them: "search", "picture_v2", "plugin:<app id>", ...
     pub system_hints: Vec<String>,
+    /// chatgpt.com's effort slider: None (Instant), "standard" (Medium), "extended" (High).
+    pub thinking_effort: Option<String>,
 }
 
 #[derive(Debug)]
@@ -47,7 +49,18 @@ impl ChatGptClient {
             reasoning_effort: None,
             actual_model: None,
             system_hints: Vec::new(),
+            thinking_effort: None,
         }
+    }
+
+    /// Model and effort as the composer's picker chose them; ignores values that aren't
+    /// plain slugs so nothing odd reaches the request.
+    pub fn set_model_choice(&mut self, model: Option<String>, effort: Option<String>) {
+        let slug_ok = |s: &str| !s.is_empty() && s.len() <= 64 && s.chars().all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c));
+        if let Some(m) = model.filter(|m| slug_ok(m)) {
+            self.model = m;
+        }
+        self.thinking_effort = effort.filter(|e| slug_ok(e));
     }
 
     fn headers(&self) -> reqwest::header::HeaderMap {
@@ -331,6 +344,9 @@ impl ChatGptClient {
         }
 
         apply_system_hints(&mut body, &self.system_hints, self.reasoning_effort.as_deref());
+        if let Some(effort) = &self.thinking_effort {
+            body["thinking_effort"] = json!(effort);
+        }
 
         if !self.enable_mcp {
             body["messages"][0]["metadata"]["disable_tool_ids"] = json!([
@@ -504,6 +520,23 @@ impl ChatGptClient {
             return Err("Image is larger than 50 MB.".into());
         }
         Ok((bytes.to_vec(), ctype))
+    }
+
+    /// Models for the composer's picker (same source chatgpt.com uses).
+    pub async fn list_models(&self) -> Result<ModelList, String> {
+        let url = format!("{BASE_URL}/backend-api/models?history_and_training_disabled=false");
+        let resp = self
+            .client
+            .get(&url)
+            .headers(self.headers())
+            .send()
+            .await
+            .map_err(|e| format!("Loading models failed: {e}"))?;
+        if !resp.status().is_success() {
+            return Err(format!("Loading models failed (HTTP {}).", resp.status()));
+        }
+        let data: Value = resp.json().await.map_err(|e| format!("Invalid response: {e}"))?;
+        Ok(parse_models(&data))
     }
 
     /// Entries for the composer's "@" menu (same source chatgpt.com uses).
@@ -740,6 +773,56 @@ fn apply_system_hints(body: &mut Value, picked: &[String], reasoning_effort: Opt
     if !hints.is_empty() {
         body["system_hints"] = json!(hints);
     }
+}
+
+/// A model family for the picker: its plain slug (sent for Instant) and its thinking slug
+/// (sent with an effort for Medium/High). Checked on chatgpt.com for GPT-6:
+/// Instant = "gpt-6", Medium = "gpt-6-thinking"+"standard", High = "gpt-6-thinking"+"extended".
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct ModelFamily {
+    pub slug: String,
+    pub thinking_slug: String,
+    pub title: String,
+    pub efforts: Vec<String>,
+}
+
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct ModelList {
+    pub default_slug: String,
+    pub families: Vec<ModelFamily>,
+}
+
+/// Families that have both "<slug>" and "<slug>-thinking" with configurable effort, in the
+/// order /backend-api/models lists them, the account default first.
+pub fn parse_models(data: &Value) -> ModelList {
+    let models: Vec<&Value> = data["models"].as_array().map(|a| a.iter().collect()).unwrap_or_default();
+    let by_slug = |s: &str| models.iter().find(|m| m["slug"].as_str() == Some(s)).copied();
+    let default_slug = data["default_model_slug"].as_str().unwrap_or("auto").to_string();
+    let mut families: Vec<ModelFamily> = models
+        .iter()
+        .filter_map(|m| {
+            let slug = m["slug"].as_str()?;
+            let thinking = by_slug(&format!("{slug}-thinking"))?;
+            if thinking["configurable_thinking_effort"].as_bool() != Some(true) {
+                return None;
+            }
+            let efforts = thinking["thinking_efforts"]
+                .as_array()
+                .map(|a| a.iter().filter_map(|e| e["thinking_effort"].as_str().or(e.as_str()).map(str::to_string)).collect())
+                .unwrap_or_default();
+            Some(ModelFamily {
+                slug: slug.to_string(),
+                thinking_slug: format!("{slug}-thinking"),
+                title: m["title"].as_str().unwrap_or(slug).to_string(),
+                efforts,
+            })
+        })
+        .collect();
+    if let Some(i) = families.iter().position(|f| f.slug == default_slug) {
+        let f = families.remove(i);
+        families.insert(0, f);
+    }
+    ModelList { default_slug, families }
 }
 
 /// One entry of the "@" menu: a tool ("search", "picture_v2") or a connected app ("plugin:…").
@@ -1403,6 +1486,36 @@ mod tests {
         assert!(!is_chatgpt_file_url("https://chatgpt.com/backend-api/conversations"));
         assert!(!is_chatgpt_file_url("https://evil.com/oaiusercontent.com"));
         assert!(!is_chatgpt_file_url("https://chatgpt.com.evil.com/backend-api/estuary/content"));
+    }
+
+    #[test]
+    fn models_become_picker_families() {
+        let data: Value = serde_json::from_str(r#"{"default_model_slug":"gpt-6","models":[
+            {"slug":"gpt-5-6","title":"GPT-5.6 Sol"},
+            {"slug":"gpt-5-6-thinking","title":"GPT-5.6 Sol","configurable_thinking_effort":true,"thinking_efforts":[{"thinking_effort":"standard"},{"thinking_effort":"extended"}]},
+            {"slug":"gpt-6","title":"GPT-6"},
+            {"slug":"gpt-6-instant","title":"GPT-6"},
+            {"slug":"gpt-6-thinking","title":"GPT-6","configurable_thinking_effort":true,"thinking_efforts":[{"thinking_effort":"standard"},{"thinking_effort":"extended"}]},
+            {"slug":"gpt-6-t-mini","title":"GPT-6","configurable_thinking_effort":false}
+        ]}"#).unwrap();
+        let list = parse_models(&data);
+        assert_eq!(list.default_slug, "gpt-6");
+        let slugs: Vec<&str> = list.families.iter().map(|f| f.slug.as_str()).collect();
+        assert_eq!(slugs, ["gpt-6", "gpt-5-6"], "default family first");
+        assert_eq!(list.families[0].thinking_slug, "gpt-6-thinking");
+        assert_eq!(list.families[0].efforts, ["standard", "extended"]);
+    }
+
+    #[test]
+    fn model_choice_goes_into_the_request_like_the_web() {
+        let mut client = ChatGptClient::new("t".into());
+        client.set_model_choice(Some("gpt-6-thinking".into()), Some("extended".into()));
+        assert_eq!((client.model.as_str(), client.thinking_effort.as_deref()), ("gpt-6-thinking", Some("extended")));
+        client.set_model_choice(Some("gpt-6".into()), None);
+        assert_eq!((client.model.as_str(), client.thinking_effort.as_deref()), ("gpt-6", None));
+        client.set_model_choice(Some("bad model\"".into()), Some("x y".into()));
+        assert_eq!(client.model, "gpt-6", "odd values are ignored");
+        assert_eq!(client.thinking_effort, None);
     }
 
     #[test]

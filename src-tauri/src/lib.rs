@@ -113,11 +113,14 @@ async fn send_message(
     attachments: Option<Vec<UploadedFile>>,
     stream_id: Option<String>,
     system_hints: Option<Vec<String>>,
+    model: Option<String>,
+    thinking_effort: Option<String>,
     state: tauri::State<'_, AppState>,
     app: tauri::AppHandle,
 ) -> Result<ChatResponse, String> {
     let mut client = make_client(&state)?;
     client.system_hints = system_hints.unwrap_or_default();
+    client.set_model_choice(model, thinking_effort);
     let attachments = attachments.unwrap_or_default();
     let events = client
         .send_message_streaming(&text, &attachments, |ev| emit_live(&app, stream_id.as_deref(), ev))
@@ -166,11 +169,14 @@ const GOAL_MAX_ROUNDS: u32 = 20;
 async fn start_goal(
     task: String,
     stream_id: Option<String>,
+    model: Option<String>,
+    thinking_effort: Option<String>,
     state: tauri::State<'_, AppState>,
     app: tauri::AppHandle,
 ) -> Result<GoalResponse, String> {
     use tauri::Emitter;
     let mut client = make_client(&state)?;
+    client.set_model_choice(model, thinking_effort);
     let mut responses = Vec::new();
 
     for round in 0..GOAL_MAX_ROUNDS {
@@ -381,6 +387,12 @@ fn save_to_downloads(bytes: &[u8], ext: &str, name: &str) -> Result<String, Stri
     Ok(path.to_string_lossy().to_string())
 }
 
+/// Model families for the composer's model/effort picker.
+#[tauri::command]
+async fn models_cmd(state: tauri::State<'_, AppState>) -> Result<api::ModelList, String> {
+    make_client(&state)?.list_models().await
+}
+
 /// The composer's "@" menu entries for this account.
 #[tauri::command]
 async fn system_hints_cmd(state: tauri::State<'_, AppState>) -> Result<Vec<api::SystemHint>, String> {
@@ -497,6 +509,7 @@ pub fn run() {
             upload_bytes,
             download_image,
             system_hints_cmd,
+            models_cmd,
             generated_image,
             save_generated_image,
         ])

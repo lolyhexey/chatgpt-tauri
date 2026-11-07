@@ -26,6 +26,7 @@ let goalMode = false;
 hydrateIcons();
 
 const mentions = new Mentions(chatInput, $('mention-chips'), $('mention-menu'), () => updateSendState());
+const picker = new ModelPicker($('model-btn'), $('model-label'), $('model-panel'));
 const chat = new Chat($('thread'), $('messages'), mainEl);
 const attachments = new Attachments($('att-tray'), (message) => {
   if (message) setStatus(message);
@@ -147,7 +148,7 @@ async function sendText(text, files = [], display = [], systemHints = []) {
     unlisten = await window.__TAURI__.event.listen('chat-delta', (e) => {
       if (e.payload.stream_id === streamId) chat.onLive(e.payload);
     });
-    const response = await invoke('send_message', { text, attachments: files, streamId, systemHints });
+    const response = await invoke('send_message', Object.assign({ text, attachments: files, streamId, systemHints }, picker.request()));
     // full_text is joined per message in Rust (or is the server's stored copy).
     if (response.stored) chat.useStored(response.stored);
     await chat.completePending(response.full_text || '');
@@ -188,7 +189,7 @@ async function startGoal(task) {
         chat.startPending();
       });
     }));
-    const result = await invoke('start_goal', { task, streamId });
+    const result = await invoke('start_goal', Object.assign({ task, streamId }, picker.request()));
     await queue;
     notice.textContent = `${result.complete ? 'Goal complete' : 'Goal stopped'} · ${result.iterations} ${result.iterations === 1 ? 'round' : 'rounds'}`;
     const last = result.responses[result.responses.length - 1];
@@ -232,6 +233,30 @@ window.chatApp = { sendText: (text) => sendText(text), canSend: () => !sending }
 // ---------- Attaching files: "+" menu, paste, drag and drop ----------
 
 function closePlusMenu() { plusMenu.hidden = true; }
+
+// The "+" menu lists the same tools and apps as "@" (as on chatgpt.com); picking one adds the
+// same chip, so it is sent the same way.
+function renderPlusTools() {
+  const box = $('plus-tools');
+  const items = mentions.items.filter((i) => i.initial);
+  box.innerHTML = items.length ? '<div class="menu-sep"></div>' + items.map((i, n) =>
+    '<button type="button" class="menu-item" data-tool="' + n + '">' +
+    '<span class="menu-item-logo">' + (mentionLogo(i, 18) || icon(i.is_plugin ? 'package' : 'wrench', 16)) + '</span>' +
+    '<span class="menu-item-name">' + escText(i.label) + '</span>' +
+    (i.description && i.description !== i.label ? '<span class="menu-item-desc">' + escText(i.description) + '</span>' : '') +
+    '</button>').join('') : '';
+  box.onclick = (e) => {
+    const row = e.target.closest('[data-tool]');
+    if (!row) return;
+    closePlusMenu();
+    mentions.pick(items[Number(row.getAttribute('data-tool'))]);
+  };
+}
+
+function loadComposerMenus() {
+  mentions.load().then(renderPlusTools);
+  picker.load();
+}
 
 plusBtn.addEventListener('click', (e) => {
   e.stopPropagation();
@@ -325,7 +350,7 @@ $('token-save-btn').addEventListener('click', async () => {
   if (!token) return;
   try {
     await invoke('save_token', { token });
-    mentions.load();
+    loadComposerMenus();
     loginOverlay.hidden = true;
     tokenInput.value = '';
     loginError.textContent = '';
@@ -342,7 +367,7 @@ async function init() {
   const token = await invoke('get_token');
   if (!token) showLogin('');
   else {
-    mentions.load();
+    loadComposerMenus();
     await sidebar.refresh();
   }
   chatInput.focus();
