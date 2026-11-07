@@ -316,6 +316,20 @@ button { font: inherit; color: inherit; }
   padding: 8px 24px 40px;
 }
 
+/* Chat being fetched: spinner centred in the thread area, appears after 0.4 s like the web */
+.thread:has(> .thread-loading) { height: 100%; }
+.thread-loading {
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #cdcdcd;
+  animation: delayed-show 0.4s step-end;
+}
+.thread-loading svg { animation: spin 2s linear infinite; }
+@keyframes delayed-show { from { visibility: hidden; } to { visibility: visible; } }
+@media (prefers-reduced-motion: reduce) { .thread-loading svg { animation: none; } }
+
 .hero {
   display: none;
   margin: 0 0 28px;

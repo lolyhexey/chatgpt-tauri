@@ -12,6 +12,18 @@ class Chat {
     this._updateEmpty();
   }
 
+  // While a chat is fetched (measured on chatgpt.com): a 28px spinner centred in the thread,
+  // shown only if loading takes longer than 0.4 s. Replaced by loadConversation/clear.
+  showLoading() {
+    this.thread.innerHTML = '<div class="thread-loading" role="status" aria-busy="true" aria-label="Loading chat">'
+      + '<svg viewBox="0 0 24 24" width="28" height="28" fill="none" aria-hidden="true">'
+      + '<circle cx="12" cy="12" r="9.5" stroke="currentColor" stroke-width="2.5" opacity="0.3"/>'
+      + '<path d="M12 2.5a9.5 9.5 0 0 1 9.5 9.5" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/>'
+      + '</svg></div>';
+    this.pending = null;
+    this._updateEmpty();
+  }
+
   loadConversation(messages) {
     this.thread.innerHTML = '';
     this.pending = null;

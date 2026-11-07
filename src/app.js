@@ -201,7 +201,10 @@ async function openConversation(id) {
   showView(v);
   const cached = convCache.get(id);
   const fresh = cached && cached.updated === sidebar.updatedOf(id);
-  if (!fresh) setStatus('Loading…');
+  if (!fresh) {
+    setStatus('Loading…');
+    v.chat.showLoading();
+  }
   try {
     const conv = fresh ? cached.conv : await invoke('get_conversation_cmd', { id });
     if (!fresh) convCache.set(id, { conv, updated: sidebar.updatedOf(id) });
@@ -369,6 +372,9 @@ function submitComposer() {
   // Typing during a call is allowed (as on the web) but sending isn't supported yet.
   if (voiceActive) { setStatus('Sending text during a voice call isn’t supported yet'); return; }
   if (sendBtn.disabled) return;
+  // The chat is still being fetched: sending now would reply to the wrong message and the
+  // loaded history would then replace the new turn.
+  if (view.el.querySelector('.thread-loading')) { setStatus('Wait for the chat to finish loading'); return; }
   if (attachments.hasErrors()) {
     setStatus('Remove the files that failed to upload first');
     return;
