@@ -148,9 +148,9 @@ async function sendText(text, files = [], display = [], systemHints = []) {
       if (e.payload.stream_id === streamId) chat.onLive(e.payload);
     });
     const response = await invoke('send_message', { text, attachments: files, streamId, systemHints });
-    const fullText = response.full_text ||
-      response.events.filter((e) => e.type === 'text').map((e) => e.delta).join('');
-    await chat.completePending(fullText);
+    // full_text is joined per message in Rust (or is the server's stored copy).
+    if (response.stored) chat.useStored(response.stored);
+    await chat.completePending(response.full_text || '');
     const done = response.events.find((e) => e.type === 'done');
     if (done && done.conversation_id) currentConversationId = done.conversation_id;
     await afterTurn();

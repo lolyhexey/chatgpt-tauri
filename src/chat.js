@@ -42,7 +42,7 @@ class Chat {
   onLive(ev) {
     if (!this.pending) return;
     if (ev.type === 'step') this._step(ev);
-    else if (ev.type === 'text') this._text(ev.delta);
+    else if (ev.type === 'text') this._text(ev.delta, ev.id);
     else if (ev.type === 'images') (ev.images || []).forEach((img) => this.ctx.images.set(img.query, img));
     else if (ev.type === 'generated') this._generated(ev.images || []);
   }
@@ -66,6 +66,17 @@ class Chat {
     if (this._isNearBottom()) this._scrollToBottom();
   }
 
+  // The server's copy of the reply (sent when the stream carried several reply messages):
+  // its sources and images join this reply's context before the final render.
+  useStored(msg) {
+    if (!this.ctx || !msg) return;
+    (msg.sources || []).forEach((s) => this.ctx.sources.set(s.id, s));
+    (msg.images || []).forEach((i) => this.ctx.images.set(i.query, i));
+    (msg.generated || []).forEach((g) => {
+      if (!this.ctx.generated.some((x) => x.file_id === g.file_id)) this.ctx.generated.push(g);
+    });
+  }
+
   // Text so far in the current reply (used by Goal mode to close a round).
   currentText() {
     return this.stream ? this.stream.target : '';
@@ -73,18 +84,31 @@ class Chat {
 
   // The server sends text in bursts every ~100-150ms; reveal each burst gradually
   // (like chatgpt.com) instead of jumping a whole paragraph at once.
-  _text(delta) {
+  // Text is kept per message id: a reply can stream in two messages at once, and appending
+  // their pieces to one string interleaves them (the "NPatch" garbling).
+  _text(delta, id) {
     if (!this.stream) {
       const typing = this.pending.querySelector('.typing');
       if (typing) typing.remove();
       const body = document.createElement('div');
       body.className = 'msg-assistant streaming';
       this.pending.appendChild(body);
-      this.stream = { body, target: '', shown: 0, frame: 0 };
+      this.stream = { body, target: '', shown: 0, frame: 0, order: [], texts: new Map() };
       if (this.activity) this.activity.el.classList.remove('running');
     }
-    this.stream.target += delta;
-    if (!this.stream.frame) this.stream.frame = requestAnimationFrame(() => this._revealStep());
+    const s = this.stream;
+    const key = id || '';
+    if (!s.texts.has(key)) { s.order.push(key); s.texts.set(key, ''); }
+    s.texts.set(key, s.texts.get(key) + delta);
+    const next = joinReplyTexts(s.order.map((k) => s.texts.get(k)));
+    // Usually the text only grows; if an earlier message changed, re-reveal from where they differ.
+    if (!next.startsWith(s.target.slice(0, s.shown))) {
+      let same = 0;
+      while (same < s.shown && next.charCodeAt(same) === s.target.charCodeAt(same)) same++;
+      s.shown = same;
+    }
+    s.target = next;
+    if (!s.frame) s.frame = requestAnimationFrame(() => this._revealStep());
   }
 
   // What ChatGPT is doing right now (searching, running code, calling a connector,
@@ -333,6 +357,14 @@ class Chat {
   _scrollToBottom() {
     this.scroller.scrollTop = this.scroller.scrollHeight;
   }
+}
+
+// Same rule as Rust's join_reply: one text per message in arrival order; a text that is the
+// start of another one is a copy of the same reply and is dropped; the rest become paragraphs.
+function joinReplyTexts(texts) {
+  const all = texts.map((t) => t.trim());
+  return all.filter((t, i) => t && !all.some((o, j) => j !== i && o.startsWith(t) && (o.length > t.length || j < i)))
+    .join('\n\n');
 }
 
 // Data a reply's components refer to: citation sources, resolved images, created images.

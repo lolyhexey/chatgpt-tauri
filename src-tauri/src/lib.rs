@@ -55,6 +55,10 @@ fn make_client(state: &AppState) -> Result<ChatGptClient, String> {
 pub struct ChatResponse {
     pub events: Vec<StreamEvent>,
     pub full_text: String,
+    /// The reply as stored on the server, when the stream carried more than one reply message
+    /// (their pieces can interleave); the UI renders this instead of the streamed text.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stored: Option<Message>,
 }
 
 /// Live progress for one send, matched by the frontend on stream_id.
@@ -77,10 +81,30 @@ fn emit_live(app: &tauri::AppHandle, stream_id: Option<&str>, event: &StreamEven
 }
 
 fn reply_text(events: &[StreamEvent]) -> String {
-    events.iter().filter_map(|e| match e {
-        StreamEvent::Text { delta } => Some(delta.as_str()),
-        _ => None,
-    }).collect()
+    api::join_reply(events).0
+}
+
+/// The last turn's reply as the server stored it: every assistant message after the last user
+/// message, text joined like separate paragraphs, sources and images merged.
+fn stored_reply(conv: &Conversation) -> Option<Message> {
+    let start = conv.messages.iter().rposition(|m| m.role == "user")? + 1;
+    let replies: Vec<&Message> = conv.messages[start..].iter().filter(|m| m.role == "assistant").collect();
+    let last = replies.last()?;
+    let mut merged = Message {
+        id: last.id.clone(),
+        role: "assistant".into(),
+        content: replies.iter().map(|m| m.content.trim()).filter(|t| !t.is_empty()).collect::<Vec<_>>().join("\n\n"),
+        attachments: Vec::new(),
+        sources: Vec::new(),
+        images: Vec::new(),
+        generated: Vec::new(),
+    };
+    for m in &replies {
+        merged.sources.extend(m.sources.iter().cloned());
+        merged.images.extend(m.images.iter().cloned());
+        merged.generated.extend(m.generated.iter().cloned());
+    }
+    Some(merged)
 }
 
 #[tauri::command]
@@ -104,8 +128,20 @@ async fn send_message(
     }
     *state.parent_message_id.lock().unwrap() = client.parent_message_id.clone();
 
-    let full_text = reply_text(&events);
-    Ok(ChatResponse { events, full_text })
+    let (full_text, reply_messages) = api::join_reply(&events);
+    // One reply message streams cleanly. With several, fetch the stored reply so the final
+    // text matches chatgpt.com exactly (costs one request, only in this case).
+    let mut stored = None;
+    if reply_messages > 1 {
+        if let Some(conv_id) = client.conversation_id.clone() {
+            match client.get_conversation(&conv_id).await {
+                Ok(conv) => stored = stored_reply(&conv),
+                Err(e) => eprintln!("could not load stored reply: {e}"),
+            }
+        }
+    }
+    let full_text = stored.as_ref().map(|m| m.content.clone()).unwrap_or(full_text);
+    Ok(ChatResponse { events, full_text, stored })
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -157,7 +193,7 @@ async fn start_goal(
             *state.conversation_id.lock().unwrap() = Some(conv_id.clone());
         }
         *state.parent_message_id.lock().unwrap() = client.parent_message_id.clone();
-        responses.push(ChatResponse { events, full_text });
+        responses.push(ChatResponse { events, full_text, stored: None });
 
         if is_complete { break; }
     }

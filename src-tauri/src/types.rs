@@ -105,8 +105,14 @@ pub struct Conversation {
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(tag = "type")]
 pub enum StreamEvent {
+    /// Reply text. `id` is the message it belongs to: a reply can stream in more than one
+    /// message at once, and their pieces must not be joined into one string.
     #[serde(rename = "text")]
-    Text { delta: String },
+    Text {
+        delta: String,
+        #[serde(default)]
+        id: String,
+    },
     /// An intermediate step ChatGPT shows while working (tool call, tool result,
     /// thinking summary, "Thought for Ns" recap). Re-emitted with the same id as it updates.
     #[serde(rename = "step")]

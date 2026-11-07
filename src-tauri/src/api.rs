@@ -359,6 +359,10 @@ impl ChatGptClient {
 
         let mut parser = SseParser::default();
         let mut events = Vec::new();
+        let mut raw_log = last_stream_path().and_then(|p| {
+            std::fs::create_dir_all(p.parent()?).ok()?;
+            std::fs::File::create(p).ok()
+        });
         // Bytes, not String: a chunk boundary can split a multi-byte (e.g. Thai) character.
         let mut pending: Vec<u8> = Vec::new();
         while let Some(chunk) = resp.chunk().await.map_err(|e| format!("Stream read error: {e}"))? {
@@ -366,6 +370,10 @@ impl ChatGptClient {
             while let Some(nl) = pending.iter().position(|&b| b == b'\n') {
                 let line: Vec<u8> = pending.drain(..=nl).collect();
                 let line = String::from_utf8_lossy(&line);
+                if let Some(f) = raw_log.as_mut() {
+                    use std::io::Write;
+                    let _ = f.write_all(redact_stream_line(&line).as_bytes());
+                }
                 for ev in parser.feed(line.trim_end_matches(['\r', '\n']), self) {
                     on_event(&ev);
                     events.push(ev);
@@ -874,6 +882,52 @@ pub fn parse_sse_line(line: &str) -> Option<(String, Value)> {
     Some((msg_id, data))
 }
 
+/// Reply text from streamed events, kept per message id (in first-seen order) so pieces of
+/// two messages streaming at once never interleave. A message whose text is the start of
+/// another's (a copy of the same reply) is dropped. Returns the text and the number of
+/// reply messages seen.
+pub fn join_reply(events: &[StreamEvent]) -> (String, usize) {
+    let mut order: Vec<&str> = Vec::new();
+    let mut texts: HashMap<&str, String> = HashMap::new();
+    for e in events {
+        if let StreamEvent::Text { delta, id } = e {
+            if !texts.contains_key(id.as_str()) {
+                order.push(id.as_str());
+            }
+            texts.entry(id.as_str()).or_default().push_str(delta);
+        }
+    }
+    let all: Vec<&str> = order.iter().map(|id| texts[id].trim()).collect();
+    let is_copy = |i: usize, t: &str| {
+        all.iter().enumerate().any(|(j, other)| {
+            j != i && other.starts_with(t) && (other.len() > t.len() || j < i)
+        })
+    };
+    let kept: Vec<&str> = all.iter().enumerate().filter(|(i, t)| !t.is_empty() && !is_copy(*i, t)).map(|(_, t)| *t).collect();
+    (kept.join("\n\n"), order.len())
+}
+
+/// Where the raw stream of the last message is kept (overwritten on every send), for
+/// diagnosing replies that render differently from chatgpt.com.
+pub fn last_stream_path() -> Option<std::path::PathBuf> {
+    dirs::cache_dir().map(|d| d.join("chatgpt-ui").join("last-stream.sse"))
+}
+
+/// One raw SSE line for the diagnostic log, with the conversation resume token removed.
+fn redact_stream_line(line: &str) -> String {
+    if !line.contains("resume_conversation_token") {
+        return line.to_string();
+    }
+    match line.find("\"token\":\"") {
+        Some(at) => {
+            let start = at + "\"token\":\"".len();
+            let end = line[start..].find('"').map(|n| start + n).unwrap_or(line.len());
+            format!("{}<redacted>{}", &line[..start], &line[end..])
+        }
+        None => line.to_string(),
+    }
+}
+
 /// A signed file link served by ChatGPT itself (where generated images live).
 pub fn is_chatgpt_file_url(link: &str) -> bool {
     let Ok(u) = reqwest::Url::parse(link) else { return false };
@@ -1179,11 +1233,11 @@ impl SseParser {
         }
         let delta = parts[prev.len()..].to_string();
         self.msg_texts.insert(msg_id.clone(), parts);
-        self.last_message_id = Some(msg_id);
+        self.last_message_id = Some(msg_id.clone());
         if let Some(model) = msg.pointer("/metadata/model_slug").and_then(|m| m.as_str()) {
             client.actual_model = Some(model.to_string());
         }
-        Some(StreamEvent::Text { delta })
+        Some(StreamEvent::Text { delta, id: msg_id })
     }
 
     fn finish(self, client: &mut ChatGptClient) -> Option<StreamEvent> {
@@ -1239,7 +1293,7 @@ mod tests {
         ]
         .join("\n");
         let events = parse_sse_stream(&sse, &mut client);
-        let text: String = events.iter().filter_map(|e| match e { StreamEvent::Text { delta } => Some(delta.as_str()), _ => None }).collect();
+        let text: String = events.iter().filter_map(|e| match e { StreamEvent::Text { delta, .. } => Some(delta.as_str()), _ => None }).collect();
         assert_eq!(text, "PELICAN-42");
         assert_eq!(client.conversation_id.as_deref(), Some("c1"));
         assert_eq!(client.parent_message_id, "a1");
@@ -1271,8 +1325,49 @@ mod tests {
             ("thought".into(), "Comparing ECU types".into(), "Comparing ECU types\nEngine vs transmission units".into(), String::new()),
             ("recap".into(), "Thought for 9s".into(), String::new(), String::new()),
         ]);
-        let text: String = events.iter().filter_map(|e| match e { StreamEvent::Text { delta } => Some(delta.as_str()), _ => None }).collect();
+        let text: String = events.iter().filter_map(|e| match e { StreamEvent::Text { delta, .. } => Some(delta.as_str()), _ => None }).collect();
         assert_eq!(text, "ECU คือ");
+    }
+
+    /// The NPatch reply: a second message with the same reply started late and the two streamed
+    /// interleaved. Joined per message, the result is the reply once, never a mix.
+    #[test]
+    fn interleaved_reply_messages_do_not_mix() {
+        let mut client = ChatGptClient::new("t".into());
+        let snap = |id: &str, text: &str| {
+            format!("data: {}", json!({ "message": { "id": id, "author": { "role": "assistant" }, "recipient": "all", "channel": "final", "content": { "content_type": "text", "parts": [text] } } }))
+        };
+        let full = "**ใช่ครับ เป็นโปรเจกต์เดียวกัน — NPatch ของ `7723mod`**\n\nREADME ระบุว่าเป็น Rootless Xposed Framework";
+        let cut = |n: usize| full.chars().take(n).collect::<String>();
+        let sse = [
+            snap("a", &cut(20)),
+            snap("a", &cut(44)),
+            snap("b", &cut(52)), // b starts late: its first snapshot already holds a's text
+            snap("a", &cut(60)),
+            snap("b", &cut(80)),
+            snap("a", full),
+            snap("b", full),
+        ]
+        .join("\n");
+        let events = parse_sse_stream(&sse, &mut client);
+        let mixed: String = events.iter().filter_map(|e| match e { StreamEvent::Text { delta, .. } => Some(delta.as_str()), _ => None }).collect();
+        assert_ne!(mixed, full, "the old way (one string) garbles the reply");
+        let (text, count) = join_reply(&events);
+        assert_eq!(count, 2);
+        assert_eq!(text, full);
+
+        // Two different messages (e.g. a preamble, then the answer) are both kept, in order.
+        let two = parse_sse_stream(&[snap("p", "ผมจะตรวจสอบก่อน"), snap("q", "ผลคือ X")].join("\n"), &mut client);
+        assert_eq!(join_reply(&two).0, "ผมจะตรวจสอบก่อน\n\nผลคือ X");
+    }
+
+    #[test]
+    fn stream_log_hides_resume_token() {
+        let line = r#"data: {"type":"resume_conversation_token","kind":"topic","token":"eyJsecret","conversation_id":"c"}"#;
+        let out = redact_stream_line(line);
+        assert!(!out.contains("eyJsecret"));
+        assert!(out.contains(r#""token":"<redacted>""#) && out.contains("conversation_id"));
+        assert_eq!(redact_stream_line("data: {\"message\":1}"), "data: {\"message\":1}");
     }
 
     #[test]
@@ -1382,7 +1477,7 @@ mod tests {
             format!(r#"data: {{"message":{{"id":"a","author":{{"role":"assistant"}},"recipient":"all","content":{{"content_type":"text","parts":["{text}"]}}}}}}"#)
         };
         let mut parser = SseParser::default();
-        let delta = |evs: Vec<StreamEvent>| evs.into_iter().find_map(|e| match e { StreamEvent::Text { delta } => Some(delta), _ => None });
+        let delta = |evs: Vec<StreamEvent>| evs.into_iter().find_map(|e| match e { StreamEvent::Text { delta, .. } => Some(delta), _ => None });
         assert_eq!(delta(parser.feed(&line("ab"), &mut client)).as_deref(), Some("ab"));
         // Not a prefix of the previous text: slicing at the old byte length would split a Thai char.
         assert_eq!(delta(parser.feed(&line("สวัสดีครับ"), &mut client)), None);
@@ -1465,7 +1560,7 @@ mod tests {
             .send_message("What single color fills this image? Answer with one word.", &[file])
             .await
             .expect("send");
-        let reply: String = events.iter().filter_map(|e| match e { StreamEvent::Text { delta } => Some(delta.as_str()), _ => None }).collect();
+        let reply: String = events.iter().filter_map(|e| match e { StreamEvent::Text { delta, .. } => Some(delta.as_str()), _ => None }).collect();
         println!("reply: {reply}");
         assert!(!reply.is_empty());
     }
@@ -1482,7 +1577,7 @@ mod tests {
         let mut arrivals = Vec::new();
         client
             .send_message_streaming("Count from 1 to 30, one number per line, nothing else.", &[], |ev| {
-                if let StreamEvent::Text { delta } = ev {
+                if let StreamEvent::Text { delta, .. } = ev {
                     arrivals.push((start.elapsed().as_millis(), delta.len()));
                 }
             })
@@ -1548,7 +1643,7 @@ mod tests {
                     println!("STEP {kind} | {title} | {} | {tool}", detail.chars().take(80).collect::<String>());
                     steps.push(kind.clone());
                 }
-                StreamEvent::Text { delta } => text_len += delta.len(),
+                StreamEvent::Text { delta, .. } => text_len += delta.len(),
                 _ => {}
             })
             .await
@@ -1573,7 +1668,7 @@ mod tests {
             .send_message("What is the code word in the attached file? Reply with only the code word.", &[file])
             .await
             .expect("send");
-        let reply: String = events.iter().filter_map(|e| match e { StreamEvent::Text { delta } => Some(delta.as_str()), _ => None }).collect();
+        let reply: String = events.iter().filter_map(|e| match e { StreamEvent::Text { delta, .. } => Some(delta.as_str()), _ => None }).collect();
         println!("reply: {reply}");
         assert!(reply.contains("PELICAN"));
     }
