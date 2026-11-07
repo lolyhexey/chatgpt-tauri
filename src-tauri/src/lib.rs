@@ -1,9 +1,7 @@
-mod agents;
 mod api;
 mod api_helpers;
 mod auth;
 mod pow;
-mod tools;
 mod types;
 
 use api::ChatGptClient;
@@ -13,7 +11,6 @@ use types::*;
 
 pub struct AppState {
     pub token: Mutex<Option<String>>,
-    pub cwd: String,
     pub device_id: String,
     pub model: Mutex<String>,
     pub conversation_id: Mutex<Option<String>>,
@@ -57,8 +54,6 @@ fn make_client(state: &AppState) -> Result<ChatGptClient, String> {
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct ChatResponse {
     pub events: Vec<StreamEvent>,
-    pub tool_calls: Vec<tools::ToolCall>,
-    pub tool_results: Vec<tools::ToolResult>,
     pub full_text: String,
 }
 
@@ -74,73 +69,6 @@ fn reply_text(events: &[StreamEvent]) -> String {
         StreamEvent::Text { delta } => Some(delta.as_str()),
         _ => None,
     }).collect()
-}
-
-/// Goal mode only: runs local tools that ChatGPT requests with ```tool blocks.
-/// Normal chat never executes anything on this machine.
-async fn chat_with_tools(client: &mut ChatGptClient, message: &str, cwd: &str) -> Result<ChatResponse, String> {
-    let events = client.send_message(message, &[]).await?;
-    let full_text = reply_text(&events);
-
-    let mut all_events = events;
-    let mut all_tool_calls = Vec::new();
-    let mut all_tool_results = Vec::new();
-    let mut response_text = full_text.clone();
-
-    let max_rounds = 50;
-    for _ in 0..max_rounds {
-        let Some(tool_call) = tools::parse_tool_call(&response_text) else { break };
-
-        if tool_call.name == "spawn_agents" {
-            let subtasks_val = tool_call.args.get("subtasks").cloned().unwrap_or_default();
-            let subtasks: Vec<agents::Subtask> = serde_json::from_value(subtasks_val).unwrap_or_default();
-            if subtasks.is_empty() {
-                let result = tools::ToolResult { result: None, error: Some("subtasks must be non-empty".into()) };
-                all_tool_calls.push(tool_call.clone());
-                all_tool_results.push(result.clone());
-                let msg = format!("Tool \"spawn_agents\" returned:\n```\nERROR: {}\n```\nFix the arguments.", result.error.as_deref().unwrap_or(""));
-                let events = client.send_message(&msg, &[]).await?;
-                response_text = events.iter().filter_map(|e| match e { StreamEvent::Text { delta } => Some(delta.as_str()), _ => None }).collect();
-                all_events.extend(events);
-                continue;
-            }
-
-            all_tool_calls.push(tool_call);
-            let runner = agents::AgentRunner::new(client.token.clone(), client.model.clone(), cwd.to_string());
-            let results = runner.run(subtasks).await;
-
-            let summary: String = results.iter().enumerate().map(|(i, r)| {
-                let status = if let Some(e) = &r.error { format!("FAILED: {e}") } else { "OK".into() };
-                let text = if r.result.len() > 2000 { &r.result[..2000] } else { &r.result };
-                format!("Agent #{} [{}]: {}\nFiles: {}\n{}", i + 1, status, r.task, r.files.join(", "), text)
-            }).collect::<Vec<_>>().join("\n\n---\n\n");
-
-            let ok = results.iter().filter(|r| r.error.is_none()).count();
-            all_tool_results.push(tools::ToolResult { result: Some(format!("{ok}/{} agents completed", results.len())), error: None });
-
-            let msg = format!("Tool \"spawn_agents\" returned ({ok}/{} succeeded):\n```\n{summary}\n```\nReview results. Use tools to verify. Fix issues.", results.len());
-            let events = client.send_message(&msg, &[]).await?;
-            response_text = events.iter().filter_map(|e| match e { StreamEvent::Text { delta } => Some(delta.as_str()), _ => None }).collect();
-            all_events.extend(events);
-        } else {
-            let result = tools::execute_tool(&tool_call.name, &tool_call.args, cwd).await;
-            all_tool_calls.push(tool_call.clone());
-            all_tool_results.push(result.clone());
-
-            let output = if let Some(e) = &result.error { format!("ERROR: {e}") } else { result.result.clone().unwrap_or_default() };
-            let msg = format!("Tool \"{}\" returned:\n```\n{output}\n```\nContinue with the user's request.", tool_call.name);
-            let events = client.send_message(&msg, &[]).await?;
-            response_text = events.iter().filter_map(|e| match e { StreamEvent::Text { delta } => Some(delta.as_str()), _ => None }).collect();
-            all_events.extend(events);
-        }
-    }
-
-    Ok(ChatResponse {
-        events: all_events,
-        tool_calls: all_tool_calls,
-        tool_results: all_tool_results,
-        full_text: response_text,
-    })
 }
 
 #[tauri::command]
@@ -174,42 +102,40 @@ async fn send_message(
     *state.parent_message_id.lock().unwrap() = client.parent_message_id.clone();
 
     let full_text = reply_text(&events);
-    Ok(ChatResponse { events, tool_calls: Vec::new(), tool_results: Vec::new(), full_text })
+    Ok(ChatResponse { events, full_text })
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct GoalResponse {
     pub iterations: u32,
-    pub total_calls: u32,
     pub complete: bool,
     pub responses: Vec<ChatResponse>,
 }
 
+const GOAL_DONE: &str = "[GOAL_COMPLETE]";
+const GOAL_MAX_ROUNDS: u32 = 20;
+
+/// Goal mode: keep asking ChatGPT to continue until it reports the goal done.
+/// The work itself happens through the account's own connectors (MCP); this app runs nothing locally.
 #[tauri::command]
 async fn start_goal(
     task: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<GoalResponse, String> {
     let mut client = make_client(&state)?;
-    let cwd = state.cwd.clone();
-    let max_iterations = 20u32;
-    let max_total_calls = 200u32;
-    let mut total_calls = 0u32;
     let mut responses = Vec::new();
 
-    for i in 0..max_iterations {
-        if total_calls >= max_total_calls { break; }
-
-        let prompt = if i == 0 {
-            format!("{}\n\n[GOAL] Work autonomously to complete this goal. Use tools to investigate, implement, and verify. Use spawn_agents for parallel work.\n\nGoal: {task}\n\nWhen FULLY COMPLETE and VERIFIED, end your response with: [GOAL_COMPLETE]", tools::build_system_prompt(&cwd))
+    for round in 0..GOAL_MAX_ROUNDS {
+        let prompt = if round == 0 {
+            format!("Work on this goal autonomously until it is done. Use your connected tools to investigate, make the changes, and verify the result.\n\nGoal: {task}\n\nWhen the goal is fully complete and verified, end your reply with {GOAL_DONE}")
         } else {
-            format!("Goal not yet complete. Continue working on: \"{task}\"\n\nKeep going. When done and verified, end with: [GOAL_COMPLETE]")
+            format!("The goal is not complete yet. Continue working on: \"{task}\"\n\nWhen it is fully complete and verified, end your reply with {GOAL_DONE}")
         };
 
-        let response = chat_with_tools(&mut client, &prompt, &cwd).await?;
-        total_calls += 1 + response.tool_calls.len() as u32;
-        let is_complete = response.full_text.contains("[GOAL_COMPLETE]");
-        responses.push(response);
+        let events = client.send_message(&prompt, &[]).await?;
+        let full_text = reply_text(&events);
+        let is_complete = full_text.contains(GOAL_DONE);
+        responses.push(ChatResponse { events, full_text });
 
         if is_complete { break; }
     }
@@ -219,11 +145,10 @@ async fn start_goal(
     }
     *state.parent_message_id.lock().unwrap() = client.parent_message_id.clone();
 
-    let complete = responses.last().map(|r| r.full_text.contains("[GOAL_COMPLETE]")).unwrap_or(false);
+    let complete = responses.last().map(|r| r.full_text.contains(GOAL_DONE)).unwrap_or(false);
 
     Ok(GoalResponse {
         iterations: responses.len() as u32,
-        total_calls,
         complete,
         responses,
     })
@@ -368,14 +293,9 @@ fn open_url(url: String) -> Result<(), String> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let token = auth::load_token();
-    let cwd = std::env::current_dir()
-        .unwrap_or_default()
-        .to_string_lossy()
-        .to_string();
 
     let state = AppState {
         token: Mutex::new(token),
-        cwd,
         device_id: api_helpers::new_device_id(),
         model: Mutex::new("auto".into()),
         conversation_id: Mutex::new(None),

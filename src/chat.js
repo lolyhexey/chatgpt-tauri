@@ -17,7 +17,7 @@ class Chat {
     this.pending = null;
     for (const msg of messages) {
       if (msg.role === 'user') this._userTurn(msg.content, msg.attachments || []);
-      else this._fillAssistant(this._newAssistantTurn(), msg.content, []);
+      else this._fillAssistant(this._newAssistantTurn(), msg.content);
     }
     this._updateEmpty();
     this._scrollToBottom();
@@ -80,7 +80,7 @@ class Chat {
     this.stream = null;
   }
 
-  async completePending(text, tools) {
+  async completePending(text) {
     // Let the reveal animation catch up before swapping in the final render.
     const deadline = performance.now() + 1500;
     while (this.stream && this.stream.shown < this.stream.target.length && performance.now() < deadline) {
@@ -90,7 +90,7 @@ class Chat {
     const turn = this.pending || this._newAssistantTurn();
     this.pending = null;
     const nearBottom = this._isNearBottom();
-    this._fillAssistant(turn, text, tools || []);
+    this._fillAssistant(turn, text);
     if (nearBottom) this._scrollToBottom();
   }
 
@@ -168,9 +168,8 @@ class Chat {
     return turn;
   }
 
-  _fillAssistant(turn, text, tools) {
+  _fillAssistant(turn, text) {
     turn.innerHTML = '';
-    for (const t of tools) turn.appendChild(renderToolBlock(t.call, t.result));
     if (!text) return;
     turn._raw = text;
     const body = document.createElement('div');

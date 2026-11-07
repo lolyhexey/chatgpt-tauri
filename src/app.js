@@ -54,10 +54,6 @@ function showLogin(message) {
   tokenInput.focus();
 }
 
-function toolPairs(response) {
-  return response.tool_calls.map((call, i) => ({ call, result: response.tool_results[i] }));
-}
-
 function updateSendState() {
   const hasContent = !!chatInput.value.trim() || attachments.count() > 0;
   sendBtn.disabled = sending || attachments.busy() || !hasContent;
@@ -147,7 +143,7 @@ async function sendText(text, files = [], display = []) {
     const response = await invoke('send_message', { text, attachments: files, streamId });
     const fullText = response.full_text ||
       response.events.filter((e) => e.type === 'text').map((e) => e.delta).join('');
-    await chat.completePending(fullText, toolPairs(response));
+    await chat.completePending(fullText);
     const done = response.events.find((e) => e.type === 'done');
     if (done && done.conversation_id) currentConversationId = done.conversation_id;
     await afterTurn();
@@ -168,10 +164,10 @@ async function startGoal(task) {
   chat.startPending();
   try {
     const result = await invoke('start_goal', { task });
-    notice.textContent = `${result.complete ? 'Goal complete' : 'Goal stopped'} · ${result.iterations} iterations · ${result.total_calls} API calls`;
+    notice.textContent = `${result.complete ? 'Goal complete' : 'Goal stopped'} · ${result.iterations} ${result.iterations === 1 ? 'round' : 'rounds'}`;
     const last = result.responses[result.responses.length - 1];
     const text = last ? last.full_text.replace('[GOAL_COMPLETE]', '').trim() : '';
-    await chat.completePending(text, result.responses.flatMap(toolPairs));
+    await chat.completePending(text);
     await afterTurn();
   } catch (e) {
     notice.textContent = 'Goal failed';

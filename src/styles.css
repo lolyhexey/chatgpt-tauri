@@ -431,44 +431,6 @@ button { font: inherit; color: inherit; }
 .table-wrap td { padding: 10px 14px; border-bottom: 1px solid var(--border); vertical-align: top; }
 .table-wrap tr:last-child td { border-bottom: 0; }
 
-/* ---------- Tool calls ---------- */
-.tool-block { margin: 0 0 12px; }
-
-.tool-head {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 8px 4px 0;
-  border: 0;
-  background: none;
-  color: var(--text-muted);
-  font-size: 14px;
-  cursor: pointer;
-}
-.tool-head:hover { color: var(--text); }
-.tool-head b { font-weight: 500; font-family: var(--mono); font-size: 13px; }
-.tool-chev { transition: transform 0.15s; }
-.tool-block.open .tool-chev { transform: rotate(90deg); }
-.tool-failed .tool-head { color: var(--error); }
-
-.tool-body {
-  margin-top: 6px;
-  padding: 10px 14px;
-  border-radius: 12px;
-  background: #171717;
-}
-.tool-pre {
-  margin: 0;
-  max-height: 320px;
-  overflow: auto;
-  font: 12px/18px var(--mono);
-  color: var(--text-muted);
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-.tool-out { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); color: var(--text); }
-.tool-out.is-error { color: var(--error); }
-
 /* ---------- Composer ---------- */
 .composer-wrap { padding: 0 24px 16px; flex-shrink: 0; }
 .composer-inner { max-width: var(--thread-w); margin: 0 auto; }
