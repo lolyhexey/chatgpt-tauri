@@ -69,7 +69,8 @@
         <div class="composer-wrap">
           <div class="composer-inner">
             <div class="disclaimer">ChatGPT can make mistakes. Check important info.</div>
-            <div class="composer">
+            <div class="composer" id="composer">
+              <div class="mention-menu" id="mention-menu" role="listbox" hidden></div>
               <div class="att-tray" id="att-tray" hidden></div>
               <div class="composer-row">
                 <div class="plus-wrap">
@@ -83,6 +84,7 @@
                   <span data-icon="target" data-size="14"></span>Goal
                   <button type="button" class="goal-chip-x" id="goal-chip-close" title="Exit goal mode"><span data-icon="x" data-size="12"></span></button>
                 </span>
+                <span class="mention-chips" id="mention-chips" hidden></span>
                 <textarea id="chat-input" rows="1" placeholder="Ask ChatGPT" spellcheck="false"></textarea>
                 <button type="button" class="send-btn" id="send-btn" title="Send"><span data-icon="arrow-up" data-size="18"></span></button>
               </div>
@@ -106,6 +108,7 @@
   <script src="attachments.js"></script>
   <script src="genui.js"></script>
   <script src="markdown.js"></script>
+  <script src="mentions.js"></script>
   <script src="chat.js"></script>
   <script src="viewer.js"></script>
   <script src="sidebar.js"></script>

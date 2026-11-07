@@ -88,10 +88,12 @@ async fn send_message(
     text: String,
     attachments: Option<Vec<UploadedFile>>,
     stream_id: Option<String>,
+    system_hints: Option<Vec<String>>,
     state: tauri::State<'_, AppState>,
     app: tauri::AppHandle,
 ) -> Result<ChatResponse, String> {
     let mut client = make_client(&state)?;
+    client.system_hints = system_hints.unwrap_or_default();
     let attachments = attachments.unwrap_or_default();
     let events = client
         .send_message_streaming(&text, &attachments, |ev| emit_live(&app, stream_id.as_deref(), ev))
@@ -310,6 +312,12 @@ fn open_url(url: String) -> Result<(), String> {
     Ok(())
 }
 
+/// The composer's "@" menu entries for this account.
+#[tauri::command]
+async fn system_hints_cmd(state: tauri::State<'_, AppState>) -> Result<Vec<api::SystemHint>, String> {
+    make_client(&state)?.list_system_hints().await
+}
+
 /// File name stem for a downloaded image: letters, digits, spaces, '-', '_' only.
 fn safe_stem(name: &str) -> String {
     let stem: String = name
@@ -427,6 +435,7 @@ pub fn run() {
             upload_path,
             upload_bytes,
             download_image,
+            system_hints_cmd,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

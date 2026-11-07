@@ -261,7 +261,7 @@ class Chat {
     if (text) {
       const bubble = document.createElement('div');
       bubble.className = 'bubble';
-      bubble.textContent = text;
+      renderUserText(bubble, text);
       turn.appendChild(bubble);
     }
     this.thread.appendChild(turn);

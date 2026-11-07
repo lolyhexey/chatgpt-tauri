@@ -13,6 +13,7 @@ const plusMenu = $('plus-menu');
 const fileInput = $('file-input');
 const dropOverlay = $('drop-overlay');
 const goalChip = $('goal-chip');
+const composerEl = $('composer');
 const titleEl = $('chat-title');
 const statusEl = $('status-text');
 const searchBox = $('sb-search');
@@ -24,6 +25,7 @@ let goalMode = false;
 
 hydrateIcons();
 
+const mentions = new Mentions(chatInput, $('mention-chips'), $('mention-menu'), () => updateSendState());
 const chat = new Chat($('thread'), $('messages'), mainEl);
 const attachments = new Attachments($('att-tray'), (message) => {
   if (message) setStatus(message);
@@ -55,7 +57,7 @@ function showLogin(message) {
 }
 
 function updateSendState() {
-  const hasContent = !!chatInput.value.trim() || attachments.count() > 0;
+  const hasContent = !!chatInput.value.trim() || attachments.count() > 0 || mentions.count() > 0;
   sendBtn.disabled = sending || attachments.busy() || !hasContent;
   sendBtn.classList.toggle('busy', sending);
   sendBtn.title = attachments.busy() ? 'Waiting for files to upload' : 'Send';
@@ -73,7 +75,12 @@ function setGoalMode(value) {
   chatInput.placeholder = value ? 'Describe the goal to work on…' : 'Ask ChatGPT';
 }
 
+// Like chatgpt.com: once the text needs more than one line, it takes the full width and the
+// buttons move to a row below. Stays that way until the box is emptied (no flip-flopping).
 function autosize() {
+  chatInput.style.height = 'auto';
+  if (!chatInput.value) composerEl.classList.remove('multiline');
+  else if (chatInput.value.includes('\n') || chatInput.scrollHeight > 44) composerEl.classList.add('multiline');
   chatInput.style.height = 'auto';
   chatInput.style.height = Math.min(chatInput.scrollHeight, 220) + 'px';
 }
@@ -126,7 +133,7 @@ async function afterTurn() {
   setTitle(sidebar.titleOf(currentConversationId));
 }
 
-async function sendText(text, files = [], display = []) {
+async function sendText(text, files = [], display = [], systemHints = []) {
   text = text.trim();
   if ((!text && !files.length) || sending) return;
   if (goalMode && text) return startGoal(text);
@@ -140,7 +147,7 @@ async function sendText(text, files = [], display = []) {
     unlisten = await window.__TAURI__.event.listen('chat-delta', (e) => {
       if (e.payload.stream_id === streamId) chat.onLive(e.payload);
     });
-    const response = await invoke('send_message', { text, attachments: files, streamId });
+    const response = await invoke('send_message', { text, attachments: files, streamId, systemHints });
     const fullText = response.full_text ||
       response.events.filter((e) => e.type === 'text').map((e) => e.delta).join('');
     await chat.completePending(fullText);
@@ -203,7 +210,7 @@ function stripGoalMarker(text) {
 }
 
 function submitComposer() {
-  const text = chatInput.value;
+  let text = chatInput.value;
   if (sendBtn.disabled) return;
   if (attachments.hasErrors()) {
     setStatus('Remove the files that failed to upload first');
@@ -211,10 +218,13 @@ function submitComposer() {
   }
   // Goal mode runs a text-only autonomous loop; leave any files in the tray.
   const { files, display } = goalMode ? { files: [], display: [] } : attachments.take();
+  // "@" picks go in front of the text the way chatgpt.com sends them (goal mode keeps them).
+  const { prefix, hints } = goalMode ? { prefix: '', hints: [] } : mentions.take();
+  if (prefix) text = prefix + ' ' + text.trim();
   chatInput.value = '';
   autosize();
   updateSendState();
-  sendText(text, files, display);
+  sendText(text, files, display, hints);
 }
 
 window.chatApp = { sendText: (text) => sendText(text), canSend: () => !sending };
@@ -279,12 +289,14 @@ if (tauriWebview && tauriWebview.getCurrentWebview) {
 }
 
 chatInput.addEventListener('keydown', (e) => {
+  if (mentions.onKeyDown(e)) return;
   if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
     e.preventDefault();
     submitComposer();
   }
 });
-chatInput.addEventListener('input', () => { autosize(); updateSendState(); });
+chatInput.addEventListener('input', () => { autosize(); updateSendState(); mentions.onInput(); });
+chatInput.addEventListener('click', () => mentions.onInput());
 sendBtn.addEventListener('click', submitComposer);
 $('goal-chip-close').addEventListener('click', () => { setGoalMode(false); chatInput.focus(); });
 $('goal-nav-btn').addEventListener('click', () => { setGoalMode(true); chatInput.focus(); });
@@ -313,6 +325,7 @@ $('token-save-btn').addEventListener('click', async () => {
   if (!token) return;
   try {
     await invoke('save_token', { token });
+    mentions.load();
     loginOverlay.hidden = true;
     tokenInput.value = '';
     loginError.textContent = '';
@@ -328,7 +341,10 @@ async function init() {
   updateSendState();
   const token = await invoke('get_token');
   if (!token) showLogin('');
-  else await sidebar.refresh();
+  else {
+    mentions.load();
+    await sidebar.refresh();
+  }
   chatInput.focus();
 }
 

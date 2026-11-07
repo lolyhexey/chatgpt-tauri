@@ -2,6 +2,7 @@ use crate::api_helpers::{self, BASE_URL};
 use crate::pow;
 use crate::types::*;
 use reqwest::Client;
+use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use uuid::Uuid;
@@ -17,6 +18,9 @@ pub struct ChatGptClient {
     pub temp_chat: bool,
     pub reasoning_effort: Option<String>,
     pub actual_model: Option<String>,
+    /// Tools/apps picked with "@" in the composer for the next message, as chatgpt.com sends
+    /// them: "search", "picture_v2", "plugin:<app id>", ...
+    pub system_hints: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -42,6 +46,7 @@ impl ChatGptClient {
             temp_chat: false,
             reasoning_effort: None,
             actual_model: None,
+            system_hints: Vec::new(),
         }
     }
 
@@ -325,9 +330,7 @@ impl ChatGptClient {
             body["conversation_id"] = json!(conv_id);
         }
 
-        if let Some(effort) = &self.reasoning_effort {
-            body["system_hints"] = json!([format!("reasoning_effort:{effort}")]);
-        }
+        apply_system_hints(&mut body, &self.system_hints, self.reasoning_effort.as_deref());
 
         if !self.enable_mcp {
             body["messages"][0]["metadata"]["disable_tool_ids"] = json!([
@@ -433,6 +436,23 @@ impl ChatGptClient {
             items,
             total,
         })
+    }
+
+    /// Entries for the composer's "@" menu (same source chatgpt.com uses).
+    pub async fn list_system_hints(&self) -> Result<Vec<SystemHint>, String> {
+        let url = format!("{BASE_URL}/backend-api/system_hints?mode=all&exclude_logo=false&suggestions=true");
+        let resp = self
+            .client
+            .get(&url)
+            .headers(self.headers())
+            .send()
+            .await
+            .map_err(|e| format!("Loading tools failed: {e}"))?;
+        if !resp.status().is_success() {
+            return Err(format!("Loading tools failed (HTTP {}).", resp.status()));
+        }
+        let data: Value = resp.json().await.map_err(|e| format!("Invalid response: {e}"))?;
+        Ok(parse_system_hints(&data))
     }
 
     pub async fn get_conversation(&self, id: &str) -> Result<Conversation, String> {
@@ -612,6 +632,88 @@ fn asset_pointer(file_id: &str) -> String {
 /// Message content + metadata in the shape chatgpt.com sends: images become
 /// image_asset_pointer parts of a multimodal_text message; every file is listed in
 /// metadata.attachments.
+/// Put "@" picks where chatgpt.com puts them: top-level `system_hints` and the message's
+/// `metadata.system_hints` (with markdown serialization, since app mentions are markdown links).
+fn apply_system_hints(body: &mut Value, picked: &[String], reasoning_effort: Option<&str>) {
+    let mut hints: Vec<String> = Vec::new();
+    for h in picked {
+        let valid = !h.is_empty() && h.len() <= 200 && h.chars().all(|c| c.is_ascii_alphanumeric() || "_-:.".contains(c));
+        if valid && !hints.contains(h) {
+            hints.push(h.clone());
+        }
+    }
+    if !hints.is_empty() {
+        body["messages"][0]["metadata"]["system_hints"] = json!(hints);
+        body["messages"][0]["metadata"]["serialization_metadata"] = json!({ "render_format": "markdown" });
+    }
+    if let Some(effort) = reasoning_effort {
+        hints.push(format!("reasoning_effort:{effort}"));
+    }
+    if !hints.is_empty() {
+        body["system_hints"] = json!(hints);
+    }
+}
+
+/// One entry of the "@" menu: a tool ("search", "picture_v2") or a connected app ("plugin:…").
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct SystemHint {
+    pub id: String,
+    pub name: String,
+    pub label: String,
+    pub description: String,
+    /// Image source the UI can use directly: https URL or data:image/svg+xml.
+    pub logo: String,
+    pub is_plugin: bool,
+    /// Shown before the user types a search (chatgpt.com hides unconnected apps and some tools).
+    pub initial: bool,
+    pub aliases: Vec<String>,
+}
+
+/// Parse /backend-api/system_hints?mode=all into "@" menu entries.
+pub fn parse_system_hints(data: &Value) -> Vec<SystemHint> {
+    let Some(items) = data["system_hints"].as_array() else { return Vec::new() };
+    items
+        .iter()
+        .filter_map(|i| {
+            let id = i["system_hint"].as_str()?.to_string();
+            let name = i["name"].as_str().unwrap_or(&id).to_string();
+            let is_plugin = i["is_plugin"].as_bool().unwrap_or(false) || id.starts_with("plugin:");
+            let connected = i["is_connected"].as_bool().unwrap_or(false);
+            let hidden = i["hide_from_initial_selection"].as_bool().unwrap_or(false);
+            // Unconnected apps would need chatgpt.com's connect flow; leave them out.
+            if is_plugin && !connected {
+                return None;
+            }
+            Some(SystemHint {
+                label: i["action_label"].as_str().filter(|s| !s.is_empty()).unwrap_or(&name).to_string(),
+                description: truncate_chars(i["description"].as_str().unwrap_or(""), 120),
+                logo: logo_src(i["logo"].as_str().unwrap_or("")),
+                aliases: i["aliases"].as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect()).unwrap_or_default(),
+                initial: !hidden,
+                is_plugin,
+                id,
+                name,
+            })
+        })
+        .collect()
+}
+
+/// chatgpt.com sends logos as inline SVG markup, a site path, or an https URL.
+/// Inline SVG becomes a data: URL so it renders through <img> (no scripts run there).
+fn logo_src(logo: &str) -> String {
+    use base64::Engine;
+    let logo = logo.trim();
+    if logo.starts_with("<svg") {
+        format!("data:image/svg+xml;base64,{}", base64::engine::general_purpose::STANDARD.encode(logo))
+    } else if logo.starts_with('/') && !logo.starts_with("//") {
+        format!("{BASE_URL}{logo}")
+    } else if logo.starts_with("https://") {
+        logo.to_string()
+    } else {
+        String::new()
+    }
+}
+
 pub fn message_content(text: &str, attachments: &[UploadedFile]) -> (Value, Value) {
     if attachments.is_empty() {
         return (json!({ "content_type": "text", "parts": [text] }), json!({}));
@@ -1044,6 +1146,40 @@ mod tests {
     }
 
     #[test]
+    fn system_hints_parse_like_the_menu() {
+        let data: Value = serde_json::from_str(r#"{"system_hints":[
+            {"system_hint":"search","name":"Search","action_label":"Web search","description":"Find real-time news","logo":"<svg width=\"24\"></svg>","is_plugin":false,"is_connected":false,"hide_from_initial_selection":false},
+            {"system_hint":"tatertot","name":"Study","action_label":"Study","logo":"/images/x.png","is_plugin":false,"hide_from_initial_selection":true},
+            {"system_hint":"plugin:asdk_app_1","name":"Hexey","action_label":"Hexey","logo":"https://files.openai.com/c?sig=1","is_plugin":true,"is_connected":true,"hide_from_initial_selection":false},
+            {"system_hint":"plugin:connector_n","name":"Notion","is_plugin":true,"is_connected":false},
+            {"system_hint":"plugin:x","name":"Bad logo","logo":"javascript:alert(1)","is_plugin":true,"is_connected":true}
+        ]}"#).unwrap();
+        let hints = parse_system_hints(&data);
+        let ids: Vec<&str> = hints.iter().map(|h| h.id.as_str()).collect();
+        assert_eq!(ids, ["search", "tatertot", "plugin:asdk_app_1", "plugin:x"], "unconnected apps are left out");
+        assert_eq!(hints[0].label, "Web search");
+        assert!(hints[0].logo.starts_with("data:image/svg+xml;base64,"));
+        assert!(!hints[1].initial, "hidden from the first list but still searchable");
+        assert_eq!(hints[1].logo, "https://chatgpt.com/images/x.png");
+        assert_eq!(hints[2].logo, "https://files.openai.com/c?sig=1");
+        assert_eq!(hints[3].logo, "", "non-https logos are dropped");
+    }
+
+    #[test]
+    fn system_hints_go_where_the_web_puts_them() {
+        let mut body = json!({ "messages": [{ "metadata": {} }] });
+        apply_system_hints(&mut body, &["plugin:asdk_app_1".into(), "search".into(), "search".into(), "bad hint\"".into()], Some("high"));
+        assert_eq!(body["messages"][0]["metadata"]["system_hints"], json!(["plugin:asdk_app_1", "search"]));
+        assert_eq!(body["messages"][0]["metadata"]["serialization_metadata"]["render_format"], "markdown");
+        assert_eq!(body["system_hints"], json!(["plugin:asdk_app_1", "search", "reasoning_effort:high"]));
+
+        let mut plain = json!({ "messages": [{ "metadata": {} }] });
+        apply_system_hints(&mut plain, &[], None);
+        assert!(plain.get("system_hints").is_none());
+        assert!(plain["messages"][0]["metadata"].get("system_hints").is_none());
+    }
+
+    #[test]
     fn genui_images_match_queries() {
         let msg: Value = serde_json::from_str(r#"{"metadata":{"model_dil_v2":{"appData":{"opGenui":{"componentResults":{
             "a":{"status":"resolved","state":{"images":[{"image_search_query":"X logo","content_url":"https://images.openai.com/c1","thumbnail_url":"https://images.openai.com/t1","url":"https://www.x.com/i/1?ref=a","title":"X","show_url":true}]}},
@@ -1190,6 +1326,21 @@ mod tests {
         println!("text deltas: {}", arrivals.len());
         println!("first at {} ms, last at {} ms", arrivals.first().unwrap().0, arrivals.last().unwrap().0);
         assert!(arrivals.len() > 3, "expected several deltas, got {}", arrivals.len());
+    }
+
+    /// Read-only: fetch the "@" menu for the saved account.
+    /// Run with `cargo test live_system_hints -- --ignored --nocapture`.
+    #[tokio::test]
+    #[ignore]
+    async fn live_system_hints() {
+        let token = crate::auth::load_token().expect("saved token");
+        let client = ChatGptClient::new(token);
+        let hints = client.list_system_hints().await.expect("system hints");
+        for h in &hints {
+            let logo = h.logo.split([';', '?']).next().unwrap_or("");
+            println!("{:<34} | {:<18} | initial={} | logo={}", h.id.chars().take(34).collect::<String>(), h.label, h.initial, logo);
+        }
+        assert!(hints.iter().any(|h| h.id == "search"));
     }
 
     /// A question that needs a web search should report activity steps before the answer.
