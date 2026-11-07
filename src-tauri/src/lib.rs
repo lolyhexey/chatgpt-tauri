@@ -193,6 +193,8 @@ pub struct GoalResponse {
     pub iterations: u32,
     pub complete: bool,
     pub responses: Vec<ChatResponse>,
+    /// The judge's last decision; None when the run was stopped before one.
+    pub verdict: Option<GoalVerdict>,
 }
 
 #[derive(Serialize, Clone)]
@@ -201,8 +203,71 @@ struct GoalRound<'a> {
     round: u32,
 }
 
-const GOAL_DONE: &str = "[GOAL_COMPLETE]";
+/// A judge's decision after a round, like Claude Code's /goal evaluator: "met", "not_met",
+/// "impossible", or "error" when the check itself failed.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct GoalVerdict {
+    pub verdict: String,
+    pub reason: String,
+}
+
+#[derive(Serialize, Clone)]
+struct GoalCheck<'a> {
+    stream_id: &'a str,
+    round: u32,
+    verdict: &'a GoalVerdict,
+}
+
 const GOAL_MAX_ROUNDS: u32 = 20;
+
+/// The judge's answer: the first {...} in its reply, with "verdict" one of the three words.
+/// Anything else counts as not met (so a garbled answer never ends the goal early).
+fn parse_verdict(text: &str) -> GoalVerdict {
+    let json = text.find('{').and_then(|a| text.rfind('}').filter(|b| *b > a).map(|b| &text[a..=b]));
+    let v: serde_json::Value = json.and_then(|j| serde_json::from_str(j).ok()).unwrap_or_default();
+    let verdict = v["verdict"].as_str().map(|s| s.trim().to_ascii_lowercase()).unwrap_or_default();
+    let verdict = match verdict.as_str() {
+        "met" | "impossible" => verdict,
+        _ => "not_met".to_string(),
+    };
+    let reason: String = v["reason"].as_str().unwrap_or("").trim().chars().take(300).collect();
+    GoalVerdict { verdict, reason }
+}
+
+fn judge_prompt(task: &str, reply: &str) -> String {
+    let reply: String = if reply.chars().count() > 12_000 {
+        let tail: Vec<char> = reply.chars().rev().take(12_000).collect();
+        format!("…{}", tail.into_iter().rev().collect::<String>())
+    } else {
+        reply.to_string()
+    };
+    format!(
+        "You check whether an autonomous agent has achieved a goal. You see only the goal and the agent's latest reply; judge from what the reply shows (an unsupported claim of success is not verification).\n\n\
+         Goal:\n\"\"\"\n{task}\n\"\"\"\n\nAgent's latest reply:\n\"\"\"\n{reply}\n\"\"\"\n\n\
+         Answer with only one line of JSON: {{\"verdict\": \"met\" | \"not_met\" | \"impossible\", \"reason\": \"one short sentence\"}}\n\
+         - met: the reply shows the goal is fully done and verified.\n\
+         - impossible: the goal cannot be achieved by further work from the agent (e.g. it asks for something nobody can currently do, or only the user can unblock it).\n\
+         - not_met: otherwise; the agent can still make progress."
+    )
+}
+
+/// Ask a separate ChatGPT conversation (temporary: not saved, not in the chat list; no tools)
+/// whether the goal is met. Uses the same model as the run.
+async fn judge_goal(task: &str, reply: &str, model: &str, state: &AppState, stop: Option<&tokio::sync::watch::Receiver<bool>>) -> GoalVerdict {
+    let mut judge = match make_client(state) {
+        Ok(c) => c,
+        Err(e) => return GoalVerdict { verdict: "error".into(), reason: e },
+    };
+    judge.set_thread(None, None);
+    judge.model = model.to_string();
+    judge.temp_chat = true;
+    judge.enable_mcp = false;
+    judge.cancel = stop.cloned();
+    match judge.send_message_streaming(&judge_prompt(task, reply), &[], |_| {}).await {
+        Ok(events) => parse_verdict(&reply_text(&events)),
+        Err(e) => GoalVerdict { verdict: "error".into(), reason: e.chars().take(300).collect() },
+    }
+}
 
 /// Goal mode: keep asking ChatGPT to continue until it reports the goal done.
 /// The work itself happens through the account's own connectors (MCP); this app runs nothing locally.
@@ -223,7 +288,8 @@ async fn start_goal(
     let stop = stream_id.as_deref().map(|id| register_stop(&state, id));
     client.cancel = stop.clone();
     let mut responses = Vec::new();
-    let result = goal_rounds(&task, &mut client, &mut responses, stop.as_ref(), stream_id.as_deref(), &state, &app).await;
+    let mut verdict = None;
+    let result = goal_rounds(&task, &mut client, &mut responses, &mut verdict, stop.as_ref(), stream_id.as_deref(), &state, &app).await;
     unregister_stop(&state, stream_id.as_deref());
     result?;
 
@@ -232,34 +298,41 @@ async fn start_goal(
     }
     *state.parent_message_id.lock().unwrap() = client.parent_message_id.clone();
 
-    let complete = responses.last().map(|r| r.full_text.contains(GOAL_DONE)).unwrap_or(false);
+    let complete = verdict.as_ref().is_some_and(|v: &GoalVerdict| v.verdict == "met");
 
     Ok(GoalResponse {
         iterations: responses.len() as u32,
         complete,
         responses,
+        verdict,
     })
 }
 
-/// Goal rounds until ChatGPT says it's done, the round limit, or Stop.
+/// Goal rounds until the judge says the goal is met or impossible, the round limit, or Stop.
+/// The worker never decides it's done itself (a reply that merely mentions being done, or a
+/// marker, can't end the run); after each round a separate check reads the reply, like
+/// Claude Code's /goal, and its reason is fed into the next round.
+#[allow(clippy::too_many_arguments)]
 async fn goal_rounds(
     task: &str,
     client: &mut ChatGptClient,
     responses: &mut Vec<ChatResponse>,
+    verdict: &mut Option<GoalVerdict>,
     stop: Option<&tokio::sync::watch::Receiver<bool>>,
     stream_id: Option<&str>,
     state: &AppState,
     app: &tauri::AppHandle,
 ) -> Result<(), String> {
     use tauri::Emitter;
+    let stopped = || stop.is_some_and(|rx| *rx.borrow());
     for round in 0..GOAL_MAX_ROUNDS {
-        if stop.is_some_and(|rx| *rx.borrow()) {
+        if stopped() {
             break;
         }
-        let prompt = if round == 0 {
-            format!("Work on this goal autonomously until it is done. Use your connected tools to investigate, make the changes, and verify the result.\n\nGoal: {task}\n\nWhen the goal is fully complete and verified, end your reply with {GOAL_DONE}")
-        } else {
-            format!("The goal is not complete yet. Continue working on: \"{task}\"\n\nWhen it is fully complete and verified, end your reply with {GOAL_DONE}")
+        let prompt = match (round, verdict.as_ref()) {
+            (0, _) => format!("Work on this goal autonomously until it is done. Use your connected tools to investigate, make the changes, and verify the result.\n\nGoal: {task}"),
+            (_, Some(v)) if !v.reason.is_empty() => format!("Continue working on the goal: \"{task}\"\n\nA check of your last reply found it is not done yet: {}", v.reason),
+            _ => format!("Continue working on the goal: \"{task}\""),
         };
 
         if let Some(id) = stream_id {
@@ -269,15 +342,28 @@ async fn goal_rounds(
             .send_message_streaming(&prompt, &[], |ev| emit_live(app, stream_id, ev))
             .await?;
         let full_text = reply_text(&events);
-        let is_complete = full_text.contains(GOAL_DONE);
         // Keep the conversation pointer current so a failed later round still resumes here.
         if let Some(conv_id) = &client.conversation_id {
             *state.conversation_id.lock().unwrap() = Some(conv_id.clone());
         }
         *state.parent_message_id.lock().unwrap() = client.parent_message_id.clone();
+        if stopped() {
+            responses.push(ChatResponse { events, full_text, stored: None });
+            break;
+        }
+        let v = judge_goal(task, &full_text, &client.model, state, stop).await;
         responses.push(ChatResponse { events, full_text, stored: None });
-
-        if is_complete { break; }
+        if stopped() {
+            break;
+        }
+        if let Some(id) = stream_id {
+            let _ = app.emit("goal-check", GoalCheck { stream_id: id, round: round + 1, verdict: &v });
+        }
+        let done = v.verdict != "not_met";
+        *verdict = Some(v);
+        if done {
+            break;
+        }
     }
     Ok(())
 }
@@ -530,6 +616,35 @@ async fn download_image(url: String, name: String) -> Result<String, String> {
         return Err("Image is larger than 50 MB.".into());
     }
     save_to_downloads(&bytes, ext, &name)
+}
+
+#[cfg(test)]
+mod goal_tests {
+    use super::*;
+
+    #[test]
+    fn verdict_comes_from_the_judge_json_only() {
+        let v = parse_verdict("{\"verdict\": \"met\", \"reason\": \"All tests pass.\"}");
+        assert_eq!((v.verdict.as_str(), v.reason.as_str()), ("met", "All tests pass."));
+        // JSON wrapped in prose or a code fence still counts.
+        assert_eq!(parse_verdict("```json\n{\"verdict\":\"IMPOSSIBLE\",\"reason\":\"Open problem.\"}\n```").verdict, "impossible");
+        assert_eq!(parse_verdict("{\"verdict\":\"not_met\",\"reason\":\"No proof yet.\"}").verdict, "not_met");
+        // The reply that ended a run too early: a worker saying it will NOT claim completion.
+        assert_eq!(parse_verdict("ผมจะไม่ใส่ [GOAL_COMPLETE] เพราะยังพิสูจน์ไม่ได้").verdict, "not_met");
+        // Garbled or unknown answers never end the goal.
+        assert_eq!(parse_verdict("met").verdict, "not_met");
+        assert_eq!(parse_verdict("{\"verdict\":\"done\"}").verdict, "not_met");
+        assert_eq!(parse_verdict("").verdict, "not_met");
+    }
+
+    #[test]
+    fn judge_prompt_holds_goal_and_the_end_of_a_long_reply() {
+        let p = judge_prompt("Fix the build", "short reply");
+        assert!(p.contains("Fix the build") && p.contains("short reply") && p.contains("\"verdict\""));
+        let long = format!("{}END", "x".repeat(20_000));
+        let p = judge_prompt("g", &long);
+        assert!(p.contains("…") && p.contains("END") && p.len() < 14_000);
+    }
 }
 
 #[cfg(test)]

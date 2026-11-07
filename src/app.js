@@ -445,19 +445,27 @@ async function startGoal(task) {
   const unlisten = [];
   try {
     unlisten.push(await window.__TAURI__.event.listen('chat-delta', liveHandler(v, streamId, later)));
+    // After each round a separate check (a temporary chat) decides: met, not met, impossible.
+    // Its reason shows on the next round's notice; the final notice covers the other outcomes.
+    let checkReason = '';
+    unlisten.push(await window.__TAURI__.event.listen('goal-check', (e) => {
+      if (e.payload.stream_id !== streamId) return;
+      const v = e.payload.verdict || {};
+      later(() => { checkReason = v.verdict === 'not_met' ? (v.reason || '') : ''; });
+    }));
     unlisten.push(await window.__TAURI__.event.listen('goal-round', (e) => {
       if (e.payload.stream_id !== streamId || e.payload.round < 2) return;
       later(async () => {
         await vchat.completePending(stripGoalMarker(vchat.currentText()));
         notice.textContent = `Goal mode · round ${e.payload.round}`;
-        vchat.addNotice(`Round ${e.payload.round} · asked ChatGPT to continue`);
+        vchat.addNotice(`Round ${e.payload.round} · not done yet${checkReason ? ' — ' + checkReason : ''} · asked ChatGPT to continue`);
         vchat.startPending();
       });
     }));
     const result = await invoke('start_goal', Object.assign(
       { task, streamId, conversationId: v.convId, parentMessageId: v.parentId }, picker.request()));
     await queue;
-    notice.textContent = `${result.complete ? 'Goal complete' : 'Goal stopped'} · ${result.iterations} ${result.iterations === 1 ? 'round' : 'rounds'}`;
+    notice.textContent = goalOutcome(result);
     const last = result.responses[result.responses.length - 1];
     await vchat.completePending(last ? stripGoalMarker(last.full_text) : '');
     if (last) learnThread(v, last.events);
@@ -473,6 +481,20 @@ async function startGoal(task) {
     unlisten.forEach((u) => u());
     setSending(false);
   }
+}
+
+// Why the goal run ended, from the last check: met, impossible, the check failed, the round
+// limit, or Stop.
+function goalOutcome(result) {
+  const n = result.iterations;
+  const rounds = `${n} ${n === 1 ? 'round' : 'rounds'}`;
+  const v = result.verdict;
+  const why = v && v.reason ? ' — ' + v.reason : '';
+  if (v && v.verdict === 'met') return `Goal complete · ${rounds}${why}`;
+  if (v && v.verdict === 'impossible') return `Goal stopped: can't be done · ${rounds}${why}`;
+  if (v && v.verdict === 'error') return `Goal stopped: the check failed · ${rounds}${why}`;
+  if (v && v.verdict === 'not_met' && n >= 20) return `Goal stopped at the ${rounds} limit${why}`;
+  return `Goal stopped · ${rounds}`;
 }
 
 function stripGoalMarker(text) {
