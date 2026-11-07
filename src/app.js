@@ -535,6 +535,9 @@ voiceBtn.addEventListener('click', () => {
     timezoneOffsetMin: new Date().getTimezoneOffset(),
     conversationId: continueChat ? view.convId : null,
     parentMessageId: continueChat ? view.parentId : null,
+  }, {
+    // Pictures already in this chat must not show up again as the call's new images.
+    knownImageIds: continueChat ? [...view.el.querySelectorAll('[data-file-id]')].map((f) => f.getAttribute('data-file-id')) : [],
   });
 });
 voiceMuteBtn.addEventListener('click', () => voiceCall.toggleMute());

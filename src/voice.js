@@ -98,13 +98,18 @@ class VoiceCall {
     this._frame = 0;
   }
 
-  async start(settings) {
+  // knownImageIds: images already in the chat being continued (shown on screen). They, and any
+  // other image the saved chat has when the call starts, are never treated as new.
+  async start(settings, { knownImageIds = [] } = {}) {
     if (this.active) return;
     this.active = true;
     this.convId = null;
     this.transcript = new VoiceTranscript();
     this.images = [];
     this._polling = false;
+    this._known = new Set(knownImageIds);
+    this._knownReady = settings.conversationId ? this._savedImageIds(settings.conversationId)
+      .then((ids) => ids.forEach((x) => this._known.add(x)), (e) => console.warn('voice known images', e)) : Promise.resolve();
     this.ui.open();
     this.ui.status('Connecting…');
     try {
@@ -161,11 +166,15 @@ class VoiceCall {
 
   // Each image remembers how many of your turns came before it, so it sits in ChatGPT's reply
   // to the right request.
+  _isNew(img) {
+    return !this._known.has(img.file_id) && !this.images.some((x) => x.file_id === img.file_id);
+  }
+
   _addImages(found) {
     const users = this.transcript.lines().filter((l) => l.role === 'user').length;
     let added = false;
     for (const img of found) {
-      if (this.images.some((x) => x.file_id === img.file_id)) continue;
+      if (!this._isNew(img)) continue;
       this.images.push({ ...img, userCount: users });
       added = true;
     }
@@ -179,7 +188,7 @@ class VoiceCall {
       // Images inside messages built up from several deltas.
       for (const doc of this.transcript.docs.values()) {
         for (const img of voiceFindImages(doc)) {
-          if (!this.images.some((x) => x.file_id === img.file_id)) {
+          if (this._isNew(img)) {
             this.images.push({ ...img, userCount: this.transcript.lines().filter((l) => l.role === 'user').length });
           }
         }
@@ -195,14 +204,24 @@ class VoiceCall {
       await new Promise((r) => setTimeout(r, 10000));
       if (!this.active || !this.convId) continue;
       try {
+        // Images the chat already had before the call are skipped (the bug: continuing a chat
+        // with earlier pictures pulled them into the newest reply).
+        await this._knownReady;
         const conv = await window.__TAURI__.core.invoke('get_conversation_cmd', { id: this.convId });
         const saved = [];
         conv.messages.forEach((m) => (m.generated || []).forEach((g) => saved.push({ file_id: g.file_id, width: g.width || 0, height: g.height || 0 })));
-        const fresh = saved.filter((g) => !this.images.some((x) => x.file_id === g.file_id));
+        const fresh = saved.filter((g) => this._isNew(g));
         if (fresh.length) { this._addImages(fresh); break; }
       } catch (e) { console.warn('voice images', e); }
     }
     this._polling = false;
+  }
+
+  async _savedImageIds(convId) {
+    const conv = await window.__TAURI__.core.invoke('get_conversation_cmd', { id: convId });
+    const ids = [];
+    conv.messages.forEach((m) => (m.generated || []).forEach((g) => ids.push(g.file_id)));
+    return ids;
   }
 
   // How loud ChatGPT is speaking (0..1), so the orb can pulse with its voice like on the web.
