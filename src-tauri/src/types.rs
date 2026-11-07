@@ -13,6 +13,18 @@ pub struct Message {
     /// Images ChatGPT resolved for this reply's <AsyncImage query="…"/> tags.
     #[serde(default)]
     pub images: Vec<GenImage>,
+    /// Images ChatGPT created for this reply (Create image tool).
+    #[serde(default)]
+    pub generated: Vec<GeneratedImage>,
+}
+
+/// An image made by ChatGPT's image tool; the UI asks for a signed URL by file id.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct GeneratedImage {
+    pub file_id: String,
+    pub width: u32,
+    pub height: u32,
+    pub title: String,
 }
 
 /// An image chatgpt.com found for an <AsyncImage query="…"/> component.
@@ -110,6 +122,9 @@ pub enum StreamEvent {
     /// Images resolved for <AsyncImage/> components in the reply.
     #[serde(rename = "images")]
     Images { images: Vec<GenImage> },
+    /// Images created by ChatGPT's image tool, as soon as they arrive.
+    #[serde(rename = "generated")]
+    Generated { images: Vec<GeneratedImage> },
     #[serde(rename = "done")]
     Done {
         conversation_id: String,

@@ -17,7 +17,7 @@ class Chat {
     this.pending = null;
     for (const msg of messages) {
       if (msg.role === 'user') this._userTurn(msg.content, msg.attachments || []);
-      else this._fillAssistant(this._newAssistantTurn(), msg.content, replyContext(msg.sources, msg.images));
+      else this._fillAssistant(this._newAssistantTurn(), msg.content, replyContext(msg.sources, msg.images, msg.generated));
     }
     this._updateEmpty();
     this._scrollToBottom();
@@ -44,6 +44,26 @@ class Chat {
     if (ev.type === 'step') this._step(ev);
     else if (ev.type === 'text') this._text(ev.delta);
     else if (ev.type === 'images') (ev.images || []).forEach((img) => this.ctx.images.set(img.query, img));
+    else if (ev.type === 'generated') this._generated(ev.images || []);
+  }
+
+  // Images ChatGPT created: show them right away, even before (or without) any text.
+  _generated(images) {
+    const fresh = images.filter((g) => !this.ctx.generated.some((x) => x.file_id === g.file_id));
+    if (!fresh.length) return;
+    this.ctx.generated.push(...fresh);
+    const typing = this.pending.querySelector('.typing');
+    if (typing) typing.remove();
+    let box = this.pending.querySelector('.gen-out');
+    if (!box) {
+      box = document.createElement('div');
+      box.className = 'gen-out';
+      const body = this.pending.querySelector('.msg-assistant');
+      this.pending.insertBefore(box, body || null);
+    }
+    renderGenerated(box, fresh);
+    if (this.activity) this.activity.el.classList.remove('running');
+    if (this._isNearBottom()) this._scrollToBottom();
   }
 
   // Text so far in the current reply (used by Goal mode to close a round).
@@ -277,18 +297,28 @@ class Chat {
 
   _fillAssistant(turn, text, ctx) {
     turn.innerHTML = '';
-    if (!text) return;
-    turn._raw = text;
-    const body = document.createElement('div');
-    body.className = 'msg-assistant';
-    body.innerHTML = renderMarkdown(text, ctx);
-    hydrateMedia(body);
+    const generated = (ctx && ctx.generated) || [];
+    // Image-only replies (Create image) have no text, only the generated images.
+    if (!text && !generated.length) return;
+    turn._raw = text || '';
+    if (generated.length) {
+      const box = document.createElement('div');
+      box.className = 'gen-out';
+      renderGenerated(box, generated);
+      turn.appendChild(box);
+    }
     const actions = document.createElement('div');
     actions.className = 'msg-actions';
-    actions.innerHTML = '<button type="button" class="act-btn" data-action="copy-msg" title="Copy">' + icon('copy', 18) + '</button>';
-    turn.appendChild(body);
-    turn.appendChild(actions);
-    hydrateGenUI(body);
+    if (text) {
+      const body = document.createElement('div');
+      body.className = 'msg-assistant';
+      body.innerHTML = renderMarkdown(text, ctx);
+      hydrateMedia(body);
+      turn.appendChild(body);
+      hydrateGenUI(body);
+      actions.innerHTML = '<button type="button" class="act-btn" data-action="copy-msg" title="Copy">' + icon('copy', 18) + '</button>';
+    }
+    if (actions.innerHTML) turn.appendChild(actions);
   }
 
   _updateEmpty() {
@@ -305,13 +335,59 @@ class Chat {
   }
 }
 
-// Data a reply's components refer to: citation sources and resolved images.
-function replyContext(sources, images) {
+// Data a reply's components refer to: citation sources, resolved images, created images.
+function replyContext(sources, images, generated) {
   return {
     sources: new Map((sources || []).map((s) => [s.id, s])),
     images: new Map((images || []).map((i) => [i.query, i])),
+    generated: (generated || []).slice(),
   };
 }
+
+// file id -> Promise<data: URL>. The image's link needs the account token, so Rust fetches it.
+const generatedCache = new Map();
+
+function loadGenerated(fileId) {
+  if (!generatedCache.has(fileId)) {
+    const p = window.__TAURI__.core.invoke('generated_image', { fileId });
+    p.catch(() => generatedCache.delete(fileId)); // allow a retry next time
+    generatedCache.set(fileId, p);
+  }
+  return generatedCache.get(fileId);
+}
+
+// Created images like chatgpt.com: 480px wide, rounded, click to open the viewer.
+function renderGenerated(box, images) {
+  images.forEach((g) => {
+    const frame = document.createElement('button');
+    frame.type = 'button';
+    frame.className = 'gen-out-img loading';
+    frame.title = g.title || 'Generated image';
+    if (g.width && g.height) frame.style.aspectRatio = g.width + ' / ' + g.height;
+    frame.setAttribute('data-file-id', g.file_id);
+    box.appendChild(frame);
+    loadGenerated(g.file_id).then((src) => {
+      const img = document.createElement('img');
+      img.src = src;
+      img.alt = g.title || 'Generated image';
+      frame.appendChild(img);
+      frame.classList.remove('loading');
+    }, (err) => {
+      frame.classList.remove('loading');
+      frame.classList.add('failed');
+      frame.textContent = 'Image unavailable';
+      console.warn('generated image', err);
+    });
+  });
+}
+
+document.addEventListener('click', (e) => {
+  const frame = e.target.closest && e.target.closest('.gen-out-img');
+  if (!frame) return;
+  const img = frame.querySelector('img');
+  if (!img) return;
+  imageViewer.open({ url: img.src, title: frame.title, fileId: frame.getAttribute('data-file-id') });
+});
 
 // Partial text mid-stream: hide constructs that aren't complete yet so raw markup
 // (a half-written tag, an unfinished widget) never flashes on screen.

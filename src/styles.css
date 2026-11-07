@@ -993,6 +993,23 @@ button { font: inherit; color: inherit; }
 
 .gen-img img { cursor: zoom-in; }
 
+/* Images ChatGPT created (measured on chatgpt.com: 480px wide, radius 16) */
+.gen-out { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 12px; }
+.gen-out-img {
+  display: block;
+  width: min(480px, 100%);
+  aspect-ratio: 3 / 2;
+  padding: 0;
+  border: 0;
+  border-radius: 16px;
+  overflow: hidden;
+  background: #212121;
+  cursor: zoom-in;
+}
+.gen-out-img img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.gen-out-img.loading { animation: busy 1.4s ease-in-out infinite; cursor: default; }
+.gen-out-img.failed { display: flex; align-items: center; justify-content: center; color: var(--text-muted); font-size: 13px; cursor: default; }
+
 /* Full-screen image viewer (viewer.js), laid out like chatgpt.com's */
 .viewer {
   position: fixed;

@@ -438,6 +438,66 @@ impl ChatGptClient {
         })
     }
 
+    /// Signed, cookie-free URL for a file in the account (e.g. an image ChatGPT created).
+    pub async fn file_download_url(&self, file_id: &str) -> Result<String, String> {
+        if file_id.is_empty() || file_id.len() > 100 || !file_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+            return Err("Bad file id.".into());
+        }
+        let url = format!("{BASE_URL}/backend-api/files/download/{file_id}?inline=false");
+        let resp = self
+            .client
+            .get(&url)
+            .headers(self.headers())
+            .send()
+            .await
+            .map_err(|e| format!("Image link failed: {e}"))?;
+        if !resp.status().is_success() {
+            return Err(format!("Image link failed (HTTP {}).", resp.status()));
+        }
+        let data: Value = resp.json().await.map_err(|e| format!("Invalid response: {e}"))?;
+        let link = data["download_url"].as_str().unwrap_or("");
+        if !is_chatgpt_file_url(link) {
+            return Err("Unexpected image link.".into());
+        }
+        Ok(link.to_string())
+    }
+
+    /// Bytes of a file in the account (e.g. a generated image). The signed link still needs the
+    /// account's authorization (403 "File stream access denied" without it), so the webview
+    /// can't load it directly; this fetches it with the session headers.
+    pub async fn fetch_image_file(&self, file_id: &str) -> Result<(Vec<u8>, String), String> {
+        const MAX: usize = 50 * 1024 * 1024;
+        let link = self.file_download_url(file_id).await?;
+        let resp = self
+            .client
+            .get(&link)
+            .headers(self.headers())
+            .send()
+            .await
+            .map_err(|e| format!("Image download failed: {e}"))?;
+        if !resp.status().is_success() {
+            return Err(format!("Image download failed (HTTP {}).", resp.status()));
+        }
+        let ctype = resp
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .split(';')
+            .next()
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        if !is_supported_image(&ctype) {
+            return Err(format!("Not an image ({ctype})."));
+        }
+        let bytes = resp.bytes().await.map_err(|e| format!("Image download failed: {e}"))?;
+        if bytes.len() > MAX {
+            return Err("Image is larger than 50 MB.".into());
+        }
+        Ok((bytes.to_vec(), ctype))
+    }
+
     /// Entries for the composer's "@" menu (same source chatgpt.com uses).
     pub async fn list_system_hints(&self) -> Result<Vec<SystemHint>, String> {
         let url = format!("{BASE_URL}/backend-api/system_hints?mode=all&exclude_logo=false&suggestions=true");
@@ -493,6 +553,21 @@ impl ChatGptClient {
 
             // Search results gathered since the last user message, for the reply that cites them.
             let mut turn_sources: Vec<Source> = Vec::new();
+            // Images the image tool made, for the (often text-less) reply that follows them.
+            let mut pending_generated: Vec<GeneratedImage> = Vec::new();
+            let flush_generated = |messages: &mut Vec<Message>, pending: &mut Vec<GeneratedImage>, id: &str| {
+                if !pending.is_empty() {
+                    messages.push(Message {
+                        id: id.to_string(),
+                        role: "assistant".into(),
+                        content: String::new(),
+                        attachments: Vec::new(),
+                        sources: Vec::new(),
+                        images: Vec::new(),
+                        generated: std::mem::take(pending),
+                    });
+                }
+            };
             for nid in &chain {
                 if let Some(node) = map.get(nid.as_str()) {
                     let msg = &node["message"];
@@ -502,8 +577,10 @@ impl ChatGptClient {
                             turn_sources.push(s);
                         }
                     }
+                    pending_generated.extend(generated_images(msg));
                     if role == "user" {
                         turn_sources.clear();
+                        flush_generated(&mut messages, &mut pending_generated, &format!("{nid}-images"));
                     }
                     if role != "user" && !is_user_visible(msg) {
                         continue;
@@ -528,7 +605,8 @@ impl ChatGptClient {
                                 .collect()
                         })
                         .unwrap_or_default();
-                    if !parts.is_empty() || !attachments.is_empty() {
+                    let generated = if role == "assistant" { std::mem::take(&mut pending_generated) } else { Vec::new() };
+                    if !parts.is_empty() || !attachments.is_empty() || !generated.is_empty() {
                         messages.push(Message {
                             id: msg["id"].as_str().unwrap_or("").to_string(),
                             role: role.to_string(),
@@ -536,10 +614,12 @@ impl ChatGptClient {
                             attachments,
                             sources: if role == "assistant" { turn_sources.clone() } else { Vec::new() },
                             images: if role == "assistant" { genui_images(msg) } else { Vec::new() },
+                            generated,
                         });
                     }
                 }
             }
+            flush_generated(&mut messages, &mut pending_generated, "trailing-images");
         }
 
         Ok(Conversation {
@@ -794,6 +874,42 @@ pub fn parse_sse_line(line: &str) -> Option<(String, Value)> {
     Some((msg_id, data))
 }
 
+/// A signed file link served by ChatGPT itself (where generated images live).
+pub fn is_chatgpt_file_url(link: &str) -> bool {
+    let Ok(u) = reqwest::Url::parse(link) else { return false };
+    u.scheme() == "https"
+        && (u.host_str() == Some("chatgpt.com") && u.path().starts_with("/backend-api/estuary/content")
+            || u.host_str().is_some_and(|h| h.ends_with(".oaiusercontent.com")))
+}
+
+/// Images the image tool returned in a tool message (multimodal_text image_asset_pointer parts).
+fn generated_images(msg: &Value) -> Vec<GeneratedImage> {
+    if msg.pointer("/author/role").and_then(|r| r.as_str()) != Some("tool") {
+        return Vec::new();
+    }
+    let title = msg.pointer("/metadata/image_gen_title").and_then(|t| t.as_str()).unwrap_or("");
+    msg["content"]["parts"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|p| p["content_type"].as_str() == Some("image_asset_pointer"))
+        .filter_map(|p| {
+            let pointer = p["asset_pointer"].as_str()?;
+            let id = pointer.strip_prefix("sediment://").or_else(|| pointer.strip_prefix("file-service://"))?;
+            if id.is_empty() || !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+                return None;
+            }
+            let part_title = p.pointer("/metadata/dalle/serialization_title").and_then(|t| t.as_str()).unwrap_or("");
+            Some(GeneratedImage {
+                file_id: id.to_string(),
+                width: p["width"].as_u64().unwrap_or(0) as u32,
+                height: p["height"].as_u64().unwrap_or(0) as u32,
+                title: truncate_chars(if title.is_empty() { part_title } else { title }, 200),
+            })
+        })
+        .collect()
+}
+
 fn http_url(v: &Value) -> Option<String> {
     v.as_str().filter(|u| u.starts_with("https://") || u.starts_with("http://")).map(str::to_string)
 }
@@ -882,8 +998,11 @@ fn friendly_tool(recipient: &str) -> String {
         "Using a connector".into()
     } else if r.contains("image") || r.contains("dalle") {
         "Creating an image".into()
-    } else {
+    } else if recipient.len() <= 32 && recipient.chars().all(|c| c.is_ascii_lowercase() || c == '_') {
         format!("Using {recipient}")
+    } else {
+        // Internal tool names (e.g. the image tool's "t2uay3k.sj1i4kz") mean nothing to people.
+        "Using a tool".into()
     }
 }
 
@@ -935,6 +1054,9 @@ fn activity_step(msg: &Value) -> Option<(String, String, String, String)> {
     }
     if role == "tool" {
         let tool = msg.pointer("/author/name").and_then(|n| n.as_str()).unwrap_or("").to_string();
+        if let Some(image_title) = msg.pointer("/metadata/image_gen_title").and_then(|t| t.as_str()) {
+            return Some(("tool_result".into(), "Created image".into(), truncate_chars(image_title, 200), tool));
+        }
         // The web search request itself streams empty; its queries arrive on a tool message.
         let queries: Vec<&str> = msg.pointer("/metadata/search_model_queries/queries")
             .and_then(|q| q.as_array())
@@ -1001,6 +1123,7 @@ struct SseParser {
     last_message_id: Option<String>,
     step_sigs: HashMap<String, String>,
     image_queries: std::collections::HashSet<String>,
+    generated_ids: std::collections::HashSet<String>,
 }
 
 impl SseParser {
@@ -1016,6 +1139,13 @@ impl SseParser {
             if !fresh.is_empty() {
                 out.push(StreamEvent::Images { images: fresh });
             }
+        }
+        let made: Vec<GeneratedImage> = generated_images(&data["message"])
+            .into_iter()
+            .filter(|img| self.generated_ids.insert(img.file_id.clone()))
+            .collect();
+        if !made.is_empty() {
+            out.push(StreamEvent::Generated { images: made });
         }
         out
     }
@@ -1143,6 +1273,41 @@ mod tests {
         ]);
         let text: String = events.iter().filter_map(|e| match e { StreamEvent::Text { delta } => Some(delta.as_str()), _ => None }).collect();
         assert_eq!(text, "ECU คือ");
+    }
+
+    #[test]
+    fn generated_images_come_from_tool_messages() {
+        let tool: Value = serde_json::from_str(r#"{"author":{"role":"tool","name":"t2uay3k.sj1i4kz"},"recipient":"all",
+            "metadata":{"image_gen_title":"Sunrise Lake Fishing Adventure"},
+            "content":{"content_type":"multimodal_text","parts":[
+                {"content_type":"image_asset_pointer","asset_pointer":"sediment://file_00000000784482","width":1536,"height":1024},
+                {"content_type":"image_asset_pointer","asset_pointer":"sediment://../../etc"},
+                "text part"
+            ]}}"#).unwrap();
+        let imgs = generated_images(&tool);
+        assert_eq!(imgs, vec![GeneratedImage { file_id: "file_00000000784482".into(), width: 1536, height: 1024, title: "Sunrise Lake Fishing Adventure".into() }]);
+        let mut assistant = tool.clone();
+        assistant["author"]["role"] = json!("assistant");
+        assert!(generated_images(&assistant).is_empty(), "only tool output counts");
+
+        // In a stream: one generated event, emitted once, plus a readable activity step.
+        let mut client = ChatGptClient::new("t".into());
+        let line = format!("data: {}", json!({ "message": { "id": "t1", "author": tool["author"], "recipient": "all", "metadata": tool["metadata"], "content": tool["content"] } }));
+        let events = parse_sse_stream(&format!("{line}\n{line}"), &mut client);
+        let generated: Vec<_> = events.iter().filter(|e| matches!(e, StreamEvent::Generated { .. })).collect();
+        assert_eq!(generated.len(), 1);
+        assert!(events.iter().any(|e| matches!(e, StreamEvent::Step { title, .. } if title == "Created image")));
+        assert_eq!(friendly_tool("t2uay3k.sj1i4kz"), "Using a tool");
+    }
+
+    #[test]
+    fn only_chatgpt_file_links_are_trusted() {
+        assert!(is_chatgpt_file_url("https://chatgpt.com/backend-api/estuary/content?id=file_1&sig=x"));
+        assert!(is_chatgpt_file_url("https://files.oaiusercontent.com/file-1?se=1"));
+        assert!(!is_chatgpt_file_url("http://chatgpt.com/backend-api/estuary/content?id=1"));
+        assert!(!is_chatgpt_file_url("https://chatgpt.com/backend-api/conversations"));
+        assert!(!is_chatgpt_file_url("https://evil.com/oaiusercontent.com"));
+        assert!(!is_chatgpt_file_url("https://chatgpt.com.evil.com/backend-api/estuary/content"));
     }
 
     #[test]
@@ -1326,6 +1491,30 @@ mod tests {
         println!("text deltas: {}", arrivals.len());
         println!("first at {} ms, last at {} ms", arrivals.first().unwrap().0, arrivals.last().unwrap().0);
         assert!(arrivals.len() > 3, "expected several deltas, got {}", arrivals.len());
+    }
+
+    /// Read-only: a saved chat with generated images resolves to replies carrying them, and the
+    /// signed link downloads without cookies. Run with
+    /// `cargo test live_generated_image -- --ignored --nocapture`.
+    #[tokio::test]
+    #[ignore]
+    async fn live_generated_image() {
+        let token = crate::auth::load_token().expect("saved token");
+        let client = ChatGptClient::new(token);
+        let list = client.list_conversations(0, 20).await.expect("list");
+        let conv = list.items.iter().find(|c| c.title.contains("ตกปลา")).expect("image chat");
+        let full = client.get_conversation(&conv.id).await.expect("conversation");
+        let with_images: Vec<_> = full.messages.iter().filter(|m| !m.generated.is_empty()).collect();
+        for m in &with_images {
+            println!("reply {} | text {} chars | images {:?}", m.role, m.content.len(), m.generated.iter().map(|g| (&g.title, g.width, g.height)).collect::<Vec<_>>());
+        }
+        assert!(!with_images.is_empty());
+        let link = client.file_download_url(&with_images[0].generated[0].file_id).await.expect("link");
+        let plain = reqwest::get(&link).await.expect("fetch");
+        println!("no auth: HTTP {}", plain.status());
+        let (bytes, ctype) = client.fetch_image_file(&with_images[0].generated[0].file_id).await.expect("image");
+        println!("fetch_image_file: {ctype}, {} bytes", bytes.len());
+        assert!(ctype.starts_with("image/") && bytes.len() > 1000);
     }
 
     /// Read-only: fetch the "@" menu for the saved account.

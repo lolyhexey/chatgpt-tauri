@@ -312,6 +312,39 @@ fn open_url(url: String) -> Result<(), String> {
     Ok(())
 }
 
+/// An image ChatGPT created, as a data: URL the webview can show. Its file link needs the
+/// account's authorization, which the webview doesn't have.
+#[tauri::command]
+async fn generated_image(file_id: String, state: tauri::State<'_, AppState>) -> Result<String, String> {
+    use base64::Engine;
+    let (bytes, mime) = make_client(&state)?.fetch_image_file(&file_id).await?;
+    Ok(format!("data:{mime};base64,{}", base64::engine::general_purpose::STANDARD.encode(bytes)))
+}
+
+/// Save an image ChatGPT created to the Downloads folder (viewer "Download").
+#[tauri::command]
+async fn save_generated_image(file_id: String, name: String, state: tauri::State<'_, AppState>) -> Result<String, String> {
+    let (bytes, mime) = make_client(&state)?.fetch_image_file(&file_id).await?;
+    save_to_downloads(&bytes, image_ext(&mime).ok_or("Not an image.")?, &name)
+}
+
+fn image_ext(mime: &str) -> Option<&'static str> {
+    match mime {
+        t if t.starts_with("image/png") => Some("png"),
+        t if t.starts_with("image/webp") => Some("webp"),
+        t if t.starts_with("image/gif") => Some("gif"),
+        t if t.starts_with("image/jpeg") => Some("jpg"),
+        _ => None,
+    }
+}
+
+fn save_to_downloads(bytes: &[u8], ext: &str, name: &str) -> Result<String, String> {
+    let dir = dirs::download_dir().ok_or("No Downloads folder found.")?;
+    let path = unique_path(&dir, &safe_stem(name), ext);
+    std::fs::write(&path, bytes).map_err(|e| format!("Could not save: {e}"))?;
+    Ok(path.to_string_lossy().to_string())
+}
+
 /// The composer's "@" menu entries for this account.
 #[tauri::command]
 async fn system_hints_cmd(state: tauri::State<'_, AppState>) -> Result<Vec<api::SystemHint>, String> {
@@ -355,22 +388,14 @@ async fn download_image(url: String, name: String) -> Result<String, String> {
     if !resp.status().is_success() {
         return Err(format!("Download failed (HTTP {}).", resp.status()));
     }
-    let ext = match resp.headers().get(reqwest::header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).unwrap_or("") {
-        t if t.starts_with("image/png") => "png",
-        t if t.starts_with("image/webp") => "webp",
-        t if t.starts_with("image/gif") => "gif",
-        t if t.starts_with("image/jpeg") => "jpg",
-        t => return Err(format!("Not an image ({t}).")),
-    };
+    let ctype = resp.headers().get(reqwest::header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
+    let ext = image_ext(&ctype).ok_or_else(|| format!("Not an image ({ctype})."))?;
     const MAX: usize = 50 * 1024 * 1024;
     let bytes = resp.bytes().await.map_err(|e| format!("Download failed: {e}"))?;
     if bytes.len() > MAX {
         return Err("Image is larger than 50 MB.".into());
     }
-    let dir = dirs::download_dir().ok_or("No Downloads folder found.")?;
-    let path = unique_path(&dir, &safe_stem(&name), ext);
-    std::fs::write(&path, &bytes).map_err(|e| format!("Could not save: {e}"))?;
-    Ok(path.to_string_lossy().to_string())
+    save_to_downloads(&bytes, ext, &name)
 }
 
 #[cfg(test)]
@@ -436,6 +461,8 @@ pub fn run() {
             upload_bytes,
             download_image,
             system_hints_cmd,
+            generated_image,
+            save_generated_image,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

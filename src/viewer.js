@@ -97,7 +97,11 @@ class ImageViewer {
     if (!this.data || !window.__TAURI__) return;
     const invoke = window.__TAURI__.core.invoke;
     try {
-      const path = await invoke('download_image', { url: this.data.url, name: this.data.title || 'image' });
+      const name = this.data.title || 'image';
+      // Created images need the account token to download; reply images are plain links.
+      const path = this.data.fileId
+        ? await invoke('save_generated_image', { fileId: this.data.fileId, name })
+        : await invoke('download_image', { url: this.data.url, name });
       this._toast('Saved to Downloads', () => invoke('open_file_path', { path }));
     } catch (err) {
       this._toast(String(err));
