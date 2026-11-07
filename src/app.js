@@ -492,8 +492,8 @@ const voiceUi = {
     setStatus(text);
     voiceOrb.dataset.state = String(text).toLowerCase();
   },
-  transcript(lines) {
-    if (voiceView) voiceView.chat.setVoiceTurns(lines);
+  transcript(lines, images) {
+    if (voiceView) voiceView.chat.setVoiceTurns(lines, images);
   },
   level(v) { voiceOrb.style.setProperty('--level', v.toFixed(3)); },
   muted(on) {

@@ -15,7 +15,7 @@ class Chat {
   loadConversation(messages) {
     this.thread.innerHTML = '';
     this.pending = null;
-    for (const msg of messages) {
+    for (const msg of mergeReplies(messages)) {
       if (msg.role === 'user') this._userTurn(msg.content, msg.attachments || []);
       else this._fillAssistant(this._newAssistantTurn(), msg.content, replyContext(msg.sources, msg.images, msg.generated));
     }
@@ -77,27 +77,39 @@ class Chat {
     });
   }
 
-  // Voice mode, like chatgpt.com: each transcript turn is a normal chat message (user bubble on
-  // the right, assistant text on the left), updated live as the transcript grows.
-  setVoiceTurns(lines) {
+  // Voice mode, like chatgpt.com: the transcript appears as normal chat messages (user bubble on
+  // the right, ChatGPT on the left), updated live. ChatGPT's consecutive messages form one reply,
+  // with any image it created on top (images: [{file_id, width, height, userCount}]).
+  setVoiceTurns(lines, images) {
     if (!this.voiceTurns) this.voiceTurns = [];
     const nearBottom = this._isNearBottom();
-    lines.forEach((line, i) => {
+    const groups = voiceGroups(lines, images || []);
+    groups.forEach((g, i) => {
       let t = this.voiceTurns[i];
-      if (!t || t.role !== line.role) {
-        if (t) t.el.remove();
+      if (!t || t.role !== g.role) {
         const el = document.createElement('div');
-        el.className = 'turn ' + (line.role === 'user' ? 'turn-user' : 'turn-assistant');
-        el.innerHTML = line.role === 'user' ? '<div class="bubble"></div>' : '<div class="msg-assistant"></div>';
-        this.thread.appendChild(el);
-        t = this.voiceTurns[i] = { role: line.role, el, text: null };
+        el.className = 'turn ' + (g.role === 'user' ? 'turn-user' : 'turn-assistant');
+        el.innerHTML = g.role === 'user' ? '<div class="bubble"></div>'
+          : '<div class="gen-out" hidden></div><div class="msg-assistant"></div>';
+        if (t) t.el.replaceWith(el); else this.thread.appendChild(el);
+        t = this.voiceTurns[i] = { role: g.role, el, text: null, imageKey: '' };
       }
-      if (t.text === line.text) return;
-      t.text = line.text;
-      const box = t.el.firstChild;
-      if (line.role === 'user') box.textContent = line.text;
-      else box.innerHTML = renderMarkdown(line.text);
+      const text = g.texts.join('\n\n');
+      if (t.text !== text) {
+        t.text = text;
+        if (g.role === 'user') t.el.firstChild.textContent = text;
+        else t.el.querySelector('.msg-assistant').innerHTML = renderMarkdown(text);
+      }
+      const imageKey = g.images.map((x) => x.file_id).join(',');
+      if (g.role === 'assistant' && t.imageKey !== imageKey) {
+        const box = t.el.querySelector('.gen-out');
+        const shown = new Set([...box.querySelectorAll('[data-file-id]')].map((f) => f.getAttribute('data-file-id')));
+        renderGenerated(box, g.images.filter((x) => !shown.has(x.file_id)));
+        box.hidden = !g.images.length;
+        t.imageKey = imageKey;
+      }
     });
+    this.voiceTurns.splice(groups.length).forEach((t) => t.el.remove());
     this._updateEmpty();
     if (nearBottom) this._scrollToBottom();
   }
@@ -410,6 +422,48 @@ function fileCard(f) {
   meta.appendChild(typeEl);
   card.appendChild(meta);
   return card;
+}
+
+// Voice transcript lines -> turns: each of your lines is a turn; ChatGPT's consecutive lines join
+// into one reply. An image goes into the reply after the request it answers (userCount = how
+// many of your lines came before it); if that reply has no words yet, it starts one.
+function voiceGroups(lines, images) {
+  const groups = [];
+  let users = 0;
+  for (const l of lines) {
+    const last = groups[groups.length - 1];
+    if (l.role === 'user') { users++; groups.push({ role: 'user', texts: [l.text], users, images: [] }); }
+    else if (last && last.role === 'assistant') last.texts.push(l.text);
+    else groups.push({ role: 'assistant', texts: [l.text], users, images: [] });
+  }
+  for (const img of images) {
+    let g = groups.find((x) => x.role === 'assistant' && x.users === img.userCount);
+    if (!g) {
+      g = { role: 'assistant', texts: [], users: img.userCount, images: [] };
+      const at = groups.findIndex((x) => x.role === 'user' && x.users === img.userCount);
+      groups.splice(at === -1 ? groups.length : at + 1, 0, g);
+    }
+    g.images.push(img);
+  }
+  return groups;
+}
+
+// History like chatgpt.com: ChatGPT's consecutive messages (e.g. a voice reply said in two
+// parts around an image) show as one reply; their texts, sources and images are combined.
+function mergeReplies(messages) {
+  const out = [];
+  for (const m of messages) {
+    const prev = out[out.length - 1];
+    if (m.role !== 'user' && prev && prev.role !== 'user') {
+      prev.content = [prev.content, m.content].filter((t) => t && t.trim()).join('\n\n');
+      prev.sources = prev.sources.concat(m.sources || []);
+      prev.images = prev.images.concat(m.images || []);
+      prev.generated = prev.generated.concat((m.generated || []).filter((g) => !prev.generated.some((x) => x.file_id === g.file_id)));
+    } else {
+      out.push({ ...m, sources: (m.sources || []).slice(), images: (m.images || []).slice(), generated: (m.generated || []).slice() });
+    }
+  }
+  return out;
 }
 
 // Same rule as Rust's join_reply: one text per message in arrival order; a text that is the

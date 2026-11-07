@@ -35,6 +35,21 @@ function voiceMessageText(message) {
   return parts.map((p) => typeof p === 'string' ? p : (p && typeof p.text === 'string' ? p.text : '')).join('').trim();
 }
 
+// Images ChatGPT created during a call. Seen live: they arrive in chat_message_delta as an
+// image tool message whose parts are {content_type:"image_asset_pointer",
+// asset_pointer:"sediment://file_…", width, height}. Searched anywhere in the value so the exact
+// message shape doesn't matter; only plain file ids are accepted.
+function voiceFindImages(v, out = []) {
+  if (!v || typeof v !== 'object') return out;
+  if (Array.isArray(v)) { v.forEach((x) => voiceFindImages(x, out)); return out; }
+  if (v.content_type === 'image_asset_pointer' && typeof v.asset_pointer === 'string') {
+    const m = v.asset_pointer.match(/^(?:sediment|file-service):\/\/([A-Za-z0-9_-]{1,100})$/);
+    if (m && !out.some((x) => x.file_id === m[1])) out.push({ file_id: m[1], width: Number(v.width) || 0, height: Number(v.height) || 0 });
+  }
+  for (const x of Object.values(v)) if (x && typeof x === 'object') voiceFindImages(x, out);
+  return out;
+}
+
 // Rebuilds transcript messages from chat_message_delta events. A delta with p:"" and o:"add"
 // starts a message (numbered by c); later deltas may omit p/o and reuse the previous ones.
 class VoiceTranscript {
@@ -88,6 +103,8 @@ class VoiceCall {
     this.active = true;
     this.convId = null;
     this.transcript = new VoiceTranscript();
+    this.images = [];
+    this._polling = false;
     this.ui.open();
     this.ui.status('Connecting…');
     try {
@@ -134,8 +151,58 @@ class VoiceCall {
     if (inner.type === 'state_update' && p.new_state) this.ui.status(VOICE_STATES[p.new_state] || p.new_state);
     if (inner.type === 'chat_message_delta') {
       this.transcript.apply(p.delta);
-      if (!this._frame) this._frame = requestAnimationFrame(() => { this._frame = 0; this.ui.transcript(this.transcript.lines()); });
+      this._addImages(voiceFindImages(p.delta));
+      this._render();
     }
+    // spawn_update (seen live while an image was being made): also watch the saved chat, in
+    // case the image doesn't come through the live messages.
+    if (inner.type === 'spawn_update') this._pollSavedImages();
+  }
+
+  // Each image remembers how many of your turns came before it, so it sits in ChatGPT's reply
+  // to the right request.
+  _addImages(found) {
+    const users = this.transcript.lines().filter((l) => l.role === 'user').length;
+    let added = false;
+    for (const img of found) {
+      if (this.images.some((x) => x.file_id === img.file_id)) continue;
+      this.images.push({ ...img, userCount: users });
+      added = true;
+    }
+    if (added) this._render();
+  }
+
+  _render() {
+    if (this._frame) return;
+    this._frame = requestAnimationFrame(() => {
+      this._frame = 0;
+      // Images inside messages built up from several deltas.
+      for (const doc of this.transcript.docs.values()) {
+        for (const img of voiceFindImages(doc)) {
+          if (!this.images.some((x) => x.file_id === img.file_id)) {
+            this.images.push({ ...img, userCount: this.transcript.lines().filter((l) => l.role === 'user').length });
+          }
+        }
+      }
+      this.ui.transcript(this.transcript.lines(), this.images.slice());
+    });
+  }
+
+  async _pollSavedImages() {
+    if (this._polling) return;
+    this._polling = true;
+    for (let i = 0; i < 18 && this.active; i++) {
+      await new Promise((r) => setTimeout(r, 10000));
+      if (!this.active || !this.convId) continue;
+      try {
+        const conv = await window.__TAURI__.core.invoke('get_conversation_cmd', { id: this.convId });
+        const saved = [];
+        conv.messages.forEach((m) => (m.generated || []).forEach((g) => saved.push({ file_id: g.file_id, width: g.width || 0, height: g.height || 0 })));
+        const fresh = saved.filter((g) => !this.images.some((x) => x.file_id === g.file_id));
+        if (fresh.length) { this._addImages(fresh); break; }
+      } catch (e) { console.warn('voice images', e); }
+    }
+    this._polling = false;
   }
 
   // How loud ChatGPT is speaking (0..1), so the orb can pulse with its voice like on the web.
