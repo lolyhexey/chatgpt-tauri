@@ -1188,9 +1188,8 @@ pub fn parse_sse_line(line: &str) -> Option<(String, Value)> {
 }
 
 /// Reply text from streamed events, kept per message id (in first-seen order) so pieces of
-/// two messages streaming at once never interleave. A message whose text is the start of
-/// another's (a copy of the same reply) is dropped. Returns the text and the number of
-/// reply messages seen.
+/// two messages streaming at once never interleave, then merged with merge_reply_text.
+/// Returns the text and the number of reply messages seen.
 pub fn join_reply(events: &[StreamEvent]) -> (String, usize) {
     let mut order: Vec<&str> = Vec::new();
     let mut texts: HashMap<&str, String> = HashMap::new();
@@ -1202,14 +1201,49 @@ pub fn join_reply(events: &[StreamEvent]) -> (String, usize) {
             texts.entry(id.as_str()).or_default().push_str(delta);
         }
     }
-    let all: Vec<&str> = order.iter().map(|id| texts[id].trim()).collect();
-    let is_copy = |i: usize, t: &str| {
-        all.iter().enumerate().any(|(j, other)| {
-            j != i && other.starts_with(t) && (other.len() > t.len() || j < i)
-        })
-    };
-    let kept: Vec<&str> = all.iter().enumerate().filter(|(i, t)| !t.is_empty() && !is_copy(*i, t)).map(|(_, t)| *t).collect();
-    (kept.join("\n\n"), order.len())
+    let mut out = String::new();
+    for id in &order {
+        merge_reply_text(&mut out, texts[id].trim());
+    }
+    (out, order.len())
+}
+
+/// Add one reply message's text to the reply. The server can stream the same reply twice at
+/// once: whole in one message and cut into consecutive segments in others (seen: 788 + 3232 +
+/// 4913 chars = the 8933-char whole). So a text already inside the reply is a copy and is
+/// skipped; a text containing the reply so far replaces it; a text whose start repeats the
+/// reply's end continues it; anything else is a separate message, joined as a new paragraph.
+pub fn merge_reply_text(out: &mut String, t: &str) {
+    if t.is_empty() || out.contains(t) {
+        return;
+    }
+    if out.is_empty() || t.contains(out.as_str()) {
+        *out = t.to_string();
+        return;
+    }
+    let overlap = reply_overlap(out, t);
+    if overlap > 0 {
+        out.push_str(&t[overlap..]);
+    } else {
+        out.push_str("\n\n");
+        out.push_str(t);
+    }
+}
+
+/// Bytes of t's start that out already ends with (at least 20 chars of it), else 0.
+fn reply_overlap(out: &str, t: &str) -> usize {
+    let probe_end = t.char_indices().nth(20).map(|(i, _)| i);
+    let Some(probe_end) = probe_end else { return 0 };
+    let probe = &t[..probe_end];
+    let from = out.len().saturating_sub(t.len());
+    let from = (from..=out.len()).find(|i| out.is_char_boundary(*i)).unwrap_or(out.len());
+    for (pos, _) in out[from..].match_indices(probe) {
+        let tail = &out[from + pos..];
+        if t.starts_with(tail) {
+            return tail.len();
+        }
+    }
+    0
 }
 
 /// Where the raw stream of the last message is kept (overwritten on every send), for
@@ -1871,6 +1905,44 @@ mod tests {
         // Two different messages (e.g. a preamble, then the answer) are both kept, in order.
         let two = parse_sse_stream(&[snap("p", "ผมจะตรวจสอบก่อน"), snap("q", "ผลคือ X")].join("\n"), &mut client);
         assert_eq!(join_reply(&two).0, "ผมจะตรวจสอบก่อน\n\nผลคือ X");
+    }
+
+    #[test]
+    fn reply_streamed_whole_and_in_segments_shows_once() {
+        // Seen in a goal round: the reply streamed whole in one message ("w") while three other
+        // messages carried it cut into consecutive segments ("s1" + "s2" + "s3" == whole).
+        let mut client = ChatGptClient::new("t".into());
+        let snap = |id: &str, text: &str| {
+            format!("data: {}", json!({ "message": { "id": id, "author": { "role": "assistant" }, "recipient": "all", "channel": "final", "content": { "content_type": "text", "parts": [text] } } }))
+        };
+        let s1 = "## ผลรอบนี้\n\nเราตรวจสอบเงื่อนไขของวงจรแล้ว\n\n";
+        let s2 = "### 4. พบข้อจำกัดของวิธีพิสูจน์แบบ Fixed Window\n\nกำหนด Terras map: \\[T(n)=n/2\\]\n\n";
+        let s3 = "### 5. สถานะ\n\nยังไม่สำเร็จ และไม่มีการอ้างว่าพิสูจน์ได้แล้ว";
+        let whole = format!("{s1}{s2}{s3}");
+        let cut = |s: &str, n: usize| s.chars().take(n).collect::<String>();
+        let sse = [
+            snap("s1", &cut(s1, 10)),
+            snap("w", &cut(&whole, 10)),
+            snap("s1", s1),
+            snap("w", &cut(&whole, 40)),
+            snap("s2", &cut(s2, 30)),             // segment 2 starts while the whole is behind
+            snap("w", &cut(&whole, s1.chars().count() + 50)),
+            snap("s2", s2),
+            snap("w", &cut(&whole, s1.chars().count() + s2.chars().count() + 5)),
+            snap("s3", s3),                        // segment 3 runs ahead of the whole
+            snap("w", &whole),
+        ];
+        // At every point while streaming, nothing appears twice.
+        for k in 1..=sse.len() {
+            let events = parse_sse_stream(&sse[..k].join("\n"), &mut client);
+            let (text, _) = join_reply(&events);
+            assert_eq!(text.matches("Fixed Window").count().min(1), text.matches("Fixed Window").count(), "step {k}: duplicated");
+            assert_eq!(text.matches("### 5.").count().min(1), text.matches("### 5.").count(), "step {k}: duplicated");
+        }
+        let events = parse_sse_stream(&sse.join("\n"), &mut client);
+        let (text, count) = join_reply(&events);
+        assert_eq!(count, 4);
+        assert_eq!(text, whole.trim());
     }
 
     #[test]

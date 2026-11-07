@@ -537,12 +537,31 @@ function mergeReplies(messages) {
   return out;
 }
 
-// Same rule as Rust's join_reply: one text per message in arrival order; a text that is the
-// start of another one is a copy of the same reply and is dropped; the rest become paragraphs.
+// Same rule as Rust's join_reply/merge_reply_text: one text per message in arrival order. The
+// server can stream a reply whole in one message and cut into consecutive segments in others
+// (seen: 788 + 3232 + 4913 chars = the 8933-char whole), so a text already inside the reply is
+// a copy and skipped, one containing the reply so far replaces it, one whose start repeats the
+// reply's end continues it, and anything else is a separate paragraph.
 function joinReplyTexts(texts) {
-  const all = texts.map((t) => t.trim());
-  return all.filter((t, i) => t && !all.some((o, j) => j !== i && o.startsWith(t) && (o.length > t.length || j < i)))
-    .join('\n\n');
+  let out = '';
+  for (const raw of texts) {
+    const t = raw.trim();
+    if (!t || out.includes(t)) continue;
+    if (!out || t.includes(out)) { out = t; continue; }
+    const overlap = replyOverlap(out, t);
+    out = overlap ? out + t.slice(overlap) : out + '\n\n' + t;
+  }
+  return out;
+}
+
+// Length of t's start that out already ends with (at least 20 chars of it), else 0.
+function replyOverlap(out, t) {
+  if (t.length < 20) return 0;
+  const probe = t.slice(0, 20);
+  for (let pos = out.indexOf(probe, Math.max(0, out.length - t.length)); pos >= 0; pos = out.indexOf(probe, pos + 1)) {
+    if (t.startsWith(out.slice(pos))) return out.length - pos;
+  }
+  return 0;
 }
 
 // Data a reply's components refer to: citation sources, resolved images, created images.
