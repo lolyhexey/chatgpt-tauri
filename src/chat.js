@@ -26,14 +26,24 @@ class Chat {
 
   // keepScroll: a redraw of the chat already shown (it grew elsewhere); stay where the reader
   // is unless they were following the end.
+  // On a redraw, turns that haven't changed are kept as they are (no flash, images and code
+  // stay put); only the turns from the first difference on are built again — usually just the
+  // reply that is still growing.
   loadConversation(messages, { keepScroll = false } = {}) {
     const follow = !keepScroll || this._isNearBottom();
     const top = this.scroller.scrollTop;
-    this.thread.innerHTML = '';
+    const list = mergeReplies(messages);
+    const sigs = list.map(turnSig);
+    const old = [...this.thread.children];
+    let same = 0;
+    if (keepScroll) while (same < list.length && same < old.length && old[same].dataset.sig === sigs[same]) same++;
+    old.slice(same).forEach((el) => el.remove());
     this.pending = null;
-    for (const msg of mergeReplies(messages)) {
+    for (let i = same; i < list.length; i++) {
+      const msg = list[i];
       if (msg.role === 'user') this._userTurn(msg.content, msg.attachments || []);
       else this._fillAssistant(this._newAssistantTurn(), msg.content, replyContext(msg.sources, msg.images, msg.generated));
+      this.thread.lastElementChild.dataset.sig = sigs[i];
     }
     this._updateEmpty();
     if (follow) this._scrollToBottom();
@@ -477,6 +487,21 @@ function voiceGroups(lines, images) {
     g.images.push(img);
   }
   return groups;
+}
+
+// A short fingerprint of everything a turn shows, so a redraw can tell which turns changed.
+function turnSig(msg) {
+  const parts = [
+    msg.role,
+    msg.content || '',
+    (msg.attachments || []).map((a) => a.id + '/' + a.name).join(','),
+    (msg.generated || []).map((g) => g.file_id).join(','),
+    (msg.sources || []).map((s) => s.id || s.url || '').join(','),
+    (msg.images || []).map((i) => i.query || i.url || '').join(','),
+  ].join('\u0001');
+  let h = 5381;
+  for (let i = 0; i < parts.length; i++) h = ((h * 33) ^ parts.charCodeAt(i)) >>> 0;
+  return h.toString(36) + ':' + parts.length;
 }
 
 // History like chatgpt.com: ChatGPT's consecutive messages (e.g. a voice reply said in two
