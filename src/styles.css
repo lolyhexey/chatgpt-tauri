@@ -316,6 +316,9 @@ button { font: inherit; color: inherit; }
   padding: 8px 24px 40px;
 }
 
+/* A reply still being written on another device: no copy/actions row until it's done */
+.turn-assistant:has(+ .remote-busy) .msg-actions { display: none; }
+
 /* Chat being fetched: spinner centred in the thread area, appears after 0.4 s like the web */
 .thread:has(> .thread-loading) { height: 100%; }
 .thread-loading {

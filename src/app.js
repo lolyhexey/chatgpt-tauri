@@ -124,7 +124,7 @@ function updateSendState() {
     return;
   }
   // While the chat you're looking at is replying, the send button is a Stop button (like the web).
-  const stoppable = !!(view && view.running);
+  const stoppable = !!(view && (view.running || view.remote));
   const mode = stoppable ? 'stop' : 'send';
   if (sendBtn.dataset.mode !== mode) {
     sendBtn.dataset.mode = mode;
@@ -152,6 +152,15 @@ function updateSendState() {
 // text that already arrived stays.
 async function stopCurrent() {
   const v = view;
+  // A reply written on another device stops the same way (stop_conversation by chat id); the
+  // watcher then sees it complete.
+  if (v.remote && !v.running && !v.stopping) {
+    v.stopping = true;
+    updateSendState();
+    setStatus('Stopping…');
+    try { await invoke('stop_generation', { streamId: '', conversationId: v.convId }); } catch (e) { console.warn('stop failed', e); }
+    return;
+  }
   if (!v.running || v.stopping || !v.streamId) return;
   v.stopping = true;
   updateSendState();
@@ -204,9 +213,7 @@ async function openConversation(id) {
   // been continued elsewhere (e.g. on chatgpt.com).
   const cached = convCache.get(id);
   if (cached) {
-    v.parentId = cached.current_node;
-    v.chat.loadConversation(cached.messages);
-    setTitle(cached.title);
+    renderConv(v, cached);
     setStatus(sending ? 'Thinking…' : 'Ready');
     refreshOpenChat(v);
     return;
@@ -216,12 +223,9 @@ async function openConversation(id) {
   try {
     const conv = await invoke('get_conversation_cmd', { id });
     convCache.set(id, conv);
-    v.parentId = conv.current_node;
-    v.chat.loadConversation(conv.messages);
-    if (v === view) {
-      setTitle(conv.title);
-      setStatus(sending ? 'Thinking…' : 'Ready');
-    }
+    renderConv(v, conv);
+    if (v === view) setStatus(sending ? 'Thinking…' : 'Ready');
+    watchRemoteReply(v);
   } catch (e) {
     v.chat.clear();
     v.chat.addNotice(`Could not open this chat: ${e}`);
@@ -234,21 +238,90 @@ async function openConversation(id) {
 // e.g. chatgpt.com). Skipped while a reply or voice call runs there, or if this app changed the
 // chat while the request was out.
 async function refreshOpenChat(v) {
-  if (!v.convId || v.running || v.refreshing || v.el.querySelector('.thread-loading')) return;
+  if (!v.convId || v.running || v.remote || v.refreshing || v.el.querySelector('.thread-loading')) return;
   v.refreshing = true;
   const before = v.parentId;
   try {
     const conv = await invoke('get_conversation_cmd', { id: v.convId });
-    if (v.running || v.parentId !== before || (voiceActive && v === view)) return;
+    if (v.running || v.remote || v.parentId !== before || (voiceActive && v === view)) return;
     convCache.set(v.convId, conv);
-    if (conv.current_node === before) return;
-    v.parentId = conv.current_node;
-    v.chat.loadConversation(conv.messages);
-    if (v === view) setTitle(conv.title);
+    if (convSig(conv) !== v.sig) renderConv(v, conv, { keepScroll: true });
   } catch (e) {
     console.warn('chat refresh failed', e);
   } finally {
     v.refreshing = false;
+  }
+  watchRemoteReply(v);
+}
+
+// What a chat looks like, cheaply: changes when a message is added or a saved reply grows
+// (a reply in progress elsewhere keeps its id while its text gets longer).
+function convSig(conv) {
+  const msgs = conv.messages || [];
+  const last = msgs[msgs.length - 1];
+  return [conv.current_node, msgs.length, last ? last.content.length : 0, last ? (last.generated || []).length : 0].join(':');
+}
+
+// The saved part of a reply still being written can stop mid-tag (seen: a bare "<badge"
+// before the finished "<badge>…</badge>"); hide that unfinished tail until it completes.
+function partialConv(conv) {
+  const msgs = conv.messages.slice();
+  const last = msgs[msgs.length - 1];
+  if (last && last.role !== 'user') msgs[msgs.length - 1] = { ...last, content: last.content.replace(/<\/?[a-z][^>]*$/i, '') };
+  return { ...conv, messages: msgs };
+}
+
+function renderConv(v, conv, opts) {
+  v.parentId = conv.current_node;
+  v.sig = convSig(conv);
+  v.chat.loadConversation(conv.messages, opts);
+  if (v === view) setTitle(conv.title);
+}
+
+// A reply being written somewhere else (e.g. chatgpt.com) can't be streamed here: the server
+// resumes a stream only for the client holding its token (otherwise 404
+// "tokenless_resume_unavailable"). What the web does then, measured: check stream_status and
+// fetch the chat about every 5.6 s, showing the saved part as it grows, until it's complete.
+const REMOTE_POLL_MS = 5600;
+async function watchRemoteReply(v) {
+  if (!v.convId || v.running || v.remote || v !== view || voiceActive) return;
+  let status;
+  try { status = await invoke('stream_status_cmd', { id: v.convId }); } catch (e) { return; }
+  if (status !== 'IS_STREAMING' || v.running || v.remote || v !== view || voiceActive) return;
+  v.remote = true;
+  v.chat.showRemoteBusy();
+  sidebar.setBusy(v.convId, true);
+  updateSendState();
+  setStatus('Replying on another device…');
+  try {
+    // At most ~20 minutes, and only while this chat is the one on screen.
+    for (let i = 0; i < 215; i++) {
+      await new Promise((r) => setTimeout(r, REMOTE_POLL_MS));
+      if (v !== view || v.running || !v.remote) break;
+      status = await invoke('stream_status_cmd', { id: v.convId }).catch(() => 'IS_STREAMING');
+      const conv = await invoke('get_conversation_cmd', { id: v.convId });
+      if (v !== view || v.running) break;
+      convCache.set(v.convId, conv);
+      if (convSig(conv) !== v.sig) {
+        renderConv(v, status === 'IS_STREAMING' ? partialConv(conv) : conv, { keepScroll: true });
+        v.sig = convSig(conv);
+        if (status === 'IS_STREAMING') v.chat.showRemoteBusy();
+      }
+      if (status !== 'IS_STREAMING') break;
+    }
+    // The chat may have got its title on the other device meanwhile.
+    if (v.convId) sidebar.refresh().then(() => sidebar.setActive(view.convId));
+  } catch (e) {
+    console.warn('watching the reply failed', e);
+  } finally {
+    v.remote = false;
+    v.stopping = false;
+    v.chat.hideRemoteBusy();
+    sidebar.setBusy(v.convId, false);
+    if (v === view) {
+      updateSendState();
+      setStatus(sending ? 'Thinking…' : 'Ready');
+    }
   }
 }
 
@@ -414,6 +487,8 @@ function submitComposer() {
   // The chat is still being fetched: sending now would reply to the wrong message and the
   // loaded history would then replace the new turn.
   if (view.el.querySelector('.thread-loading')) { setStatus('Wait for the chat to finish loading'); return; }
+  // Like the web: no new message while a reply is still being written on another device.
+  if (view.remote) { setStatus('Wait for the reply on the other device to finish, or stop it'); return; }
   if (attachments.hasErrors()) {
     setStatus('Remove the files that failed to upload first');
     return;
@@ -657,7 +732,7 @@ chatInput.addEventListener('keydown', (e) => {
 });
 chatInput.addEventListener('input', () => { autosize(); updateSendState(); mentions.onInput(); });
 chatInput.addEventListener('click', () => mentions.onInput());
-sendBtn.addEventListener('click', () => { if (view.running) stopCurrent(); else submitComposer(); });
+sendBtn.addEventListener('click', () => { if (view.running || view.remote) stopCurrent(); else submitComposer(); });
 $('goal-chip-close').addEventListener('click', () => { setGoalMode(false); chatInput.focus(); });
 $('goal-nav-btn').addEventListener('click', () => { setGoalMode(true); chatInput.focus(); });
 

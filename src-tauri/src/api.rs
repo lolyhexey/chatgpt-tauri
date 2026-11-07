@@ -74,6 +74,25 @@ impl ChatGptClient {
         Ok(())
     }
 
+    /// Whether a reply is still being written in this chat, possibly by another client such as
+    /// chatgpt.com (GET /backend-api/conversation/{id}/stream_status, checked on the web:
+    /// "IS_STREAMING" while it runs, "COMPLETE" after).
+    pub async fn stream_status(&self, conversation_id: &str) -> Result<String, String> {
+        let url = format!("{BASE_URL}/backend-api/conversation/{conversation_id}/stream_status");
+        let resp = self
+            .client
+            .get(&url)
+            .headers(self.headers())
+            .send()
+            .await
+            .map_err(|e| format!("Stream status failed: {e}"))?;
+        if !resp.status().is_success() {
+            return Err(format!("Stream status failed (HTTP {}).", resp.status()));
+        }
+        let data: Value = resp.json().await.map_err(|e| format!("Invalid response: {e}"))?;
+        Ok(parse_stream_status(&data))
+    }
+
     /// Which conversation the next message continues, as the UI says (None = a new chat).
     /// Each send carries its own target, so switching chats mid-reply can't redirect it.
     pub fn set_thread(&mut self, conversation_id: Option<String>, parent_message_id: Option<String>) {
@@ -1597,9 +1616,26 @@ fn time_key(v: &Value) -> Option<String> {
     }
 }
 
+/// The status word from a stream_status response, or "" when it has none.
+fn parse_stream_status(data: &Value) -> String {
+    data["status"]
+        .as_str()
+        .filter(|s| s.len() <= 40 && s.chars().all(|c| c.is_ascii_uppercase() || c == '_'))
+        .unwrap_or("")
+        .to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stream_status_reads_the_status_word() {
+        assert_eq!(parse_stream_status(&json!({ "status": "IS_STREAMING" })), "IS_STREAMING");
+        assert_eq!(parse_stream_status(&json!({ "status": "COMPLETE" })), "COMPLETE");
+        assert_eq!(parse_stream_status(&json!({})), "");
+        assert_eq!(parse_stream_status(&json!({ "status": "<b>x</b>" })), "");
+    }
 
     #[test]
     fn time_key_reads_string_and_number_update_times() {

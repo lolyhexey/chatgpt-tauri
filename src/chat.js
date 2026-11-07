@@ -24,7 +24,11 @@ class Chat {
     this._updateEmpty();
   }
 
-  loadConversation(messages) {
+  // keepScroll: a redraw of the chat already shown (it grew elsewhere); stay where the reader
+  // is unless they were following the end.
+  loadConversation(messages, { keepScroll = false } = {}) {
+    const follow = !keepScroll || this._isNearBottom();
+    const top = this.scroller.scrollTop;
     this.thread.innerHTML = '';
     this.pending = null;
     for (const msg of mergeReplies(messages)) {
@@ -32,7 +36,22 @@ class Chat {
       else this._fillAssistant(this._newAssistantTurn(), msg.content, replyContext(msg.sources, msg.images, msg.generated));
     }
     this._updateEmpty();
-    this._scrollToBottom();
+    if (follow) this._scrollToBottom();
+    else this.scroller.scrollTop = top;
+  }
+
+  // A reply being written on another device: the thinking dots after the saved part.
+  showRemoteBusy() {
+    if (this.thread.querySelector('.remote-busy')) return;
+    const turn = this._newAssistantTurn();
+    turn.classList.add('remote-busy');
+    turn.innerHTML = '<div class="typing" aria-label="Replying on another device"></div>';
+    if (this._isNearBottom()) this._scrollToBottom();
+  }
+
+  hideRemoteBusy() {
+    const el = this.thread.querySelector('.remote-busy');
+    if (el) el.remove();
   }
 
   addUserMessage(text, files) {

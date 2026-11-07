@@ -300,6 +300,16 @@ async fn get_conversation_cmd(
     client.get_conversation(&id).await
 }
 
+/// "IS_STREAMING" while a reply is being written in this chat (also by chatgpt.com), else
+/// e.g. "COMPLETE".
+#[tauri::command]
+async fn stream_status_cmd(id: String, state: tauri::State<'_, AppState>) -> Result<String, String> {
+    if id.is_empty() || id.len() > 100 || !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+        return Err("Invalid conversation id.".into());
+    }
+    make_client(&state)?.stream_status(&id).await
+}
+
 #[tauri::command]
 async fn delete_conversation_cmd(
     id: String,
@@ -573,6 +583,7 @@ pub fn run() {
             send_message,
             list_conversations_cmd,
             get_conversation_cmd,
+            stream_status_cmd,
             delete_conversation_cmd,
             delete_all_cmd,
             new_conversation,
