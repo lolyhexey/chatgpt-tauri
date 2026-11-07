@@ -69,6 +69,15 @@
         <div class="composer-wrap">
           <div class="composer-inner">
             <div class="disclaimer">ChatGPT can make mistakes. Check important info.</div>
+            <div class="voice-bar" id="voice-bar" hidden>
+              <div class="voice-transcript" id="voice-transcript"></div>
+              <div class="voice-row">
+                <span class="voice-orb" aria-hidden="true"></span>
+                <span class="voice-status" id="voice-status">Connecting…</span>
+                <button type="button" class="voice-ctl" id="voice-mute" title="Mute microphone"><span data-icon="mic" data-size="18"></span></button>
+                <button type="button" class="voice-end" id="voice-end" title="End voice mode"><span data-icon="x" data-size="16"></span><span>End</span></button>
+              </div>
+            </div>
             <div class="composer" id="composer">
               <div class="mention-menu" id="mention-menu" role="listbox" hidden></div>
               <div class="att-tray" id="att-tray" hidden></div>
@@ -91,6 +100,7 @@
                   <button type="button" class="model-btn" id="model-btn" title="Thinking effort" aria-haspopup="true"><span id="model-label">High</span><span data-icon="chevron-down" data-size="14"></span></button>
                   <div class="model-panel" id="model-panel" hidden></div>
                 </div>
+                <button type="button" class="send-btn voice-btn" id="voice-btn" title="Start voice mode"><span data-icon="audio-lines" data-size="18"></span></button>
                 <button type="button" class="send-btn" id="send-btn" title="Send"><span data-icon="arrow-up" data-size="18"></span></button>
               </div>
             </div>
@@ -115,6 +125,7 @@
   <script src="markdown.js"></script>
   <script src="mentions.js"></script>
   <script src="picker.js"></script>
+  <script src="voice.js"></script>
   <script src="chat.js"></script>
   <script src="viewer.js"></script>
   <script src="sidebar.js"></script>

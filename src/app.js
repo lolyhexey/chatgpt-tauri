@@ -8,6 +8,8 @@ const tokenInput = $('token-input');
 const loginError = $('login-error');
 const chatInput = $('chat-input');
 const sendBtn = $('send-btn');
+const voiceBtn = $('voice-btn');
+const voiceBar = $('voice-bar');
 const plusBtn = $('plus-btn');
 const plusMenu = $('plus-menu');
 const fileInput = $('file-input');
@@ -113,12 +115,18 @@ function updateSendState() {
     sendBtn.innerHTML = icon(stoppable ? 'square' : 'arrow-up', 18);
   }
   if (stoppable) {
+    sendBtn.hidden = false;
+    voiceBtn.hidden = true;
     sendBtn.disabled = !!view.stopping;
     sendBtn.classList.remove('busy');
     sendBtn.title = 'Stop';
     return;
   }
   const hasContent = !!chatInput.value.trim() || attachments.count() > 0 || mentions.count() > 0;
+  // Like chatgpt.com: an empty box shows the blue Voice button; typing turns it into Send.
+  const showVoice = !hasContent && !sending;
+  sendBtn.hidden = showVoice;
+  voiceBtn.hidden = !showVoice;
   sendBtn.disabled = sending || attachments.busy() || !hasContent;
   sendBtn.classList.toggle('busy', sending);
   sendBtn.title = attachments.busy() ? 'Waiting for files to upload' : sending ? 'Another chat is still replying' : 'Send';
@@ -382,6 +390,71 @@ function renderPlusTools() {
     mentions.pick(items[Number(row.getAttribute('data-tool'))]);
   };
 }
+
+// ---------- Voice mode ----------
+
+const voiceUi = {
+  open() {
+    $('voice-transcript').innerHTML = '';
+    voiceBar.hidden = false;
+    composerEl.hidden = true;
+    this.muted(false);
+  },
+  close() {
+    voiceBar.hidden = true;
+    composerEl.hidden = false;
+    chatInput.focus();
+  },
+  status(text) {
+    $('voice-status').textContent = text;
+    voiceBar.dataset.state = String(text).toLowerCase();
+  },
+  // The last few turns, live (like the captions on chatgpt.com).
+  transcript(lines) {
+    const box = $('voice-transcript');
+    box.innerHTML = '';
+    lines.slice(-4).forEach((l) => {
+      const row = document.createElement('div');
+      row.className = 'voice-line ' + l.role;
+      row.textContent = l.text;
+      box.appendChild(row);
+    });
+    box.scrollTop = box.scrollHeight;
+  },
+  muted(on) {
+    const b = $('voice-mute');
+    b.innerHTML = icon(on ? 'mic-off' : 'mic', 18);
+    b.classList.toggle('off', on);
+    b.title = on ? 'Unmute microphone' : 'Mute microphone';
+  },
+  error(message) { setStatus(message); },
+};
+
+// After hanging up, open the voice chat (the server saved its transcript).
+const voiceCall = new VoiceCall(voiceUi, {
+  onEnd: async (convId, failed) => {
+    if (failed) setTimeout(() => voiceUi.close(), 2500);
+    else setStatus('Ready');
+    if (!convId) return;
+    convCache.delete(convId);
+    await new Promise((r) => setTimeout(r, 1200));
+    await sidebar.refresh();
+    openConversation(convId);
+  },
+});
+
+voiceBtn.addEventListener('click', () => {
+  if (sending || voiceCall.active) return;
+  setStatus('Voice');
+  voiceCall.start({
+    voice: 'juniper',
+    locale: navigator.language || 'en-US',
+    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+    timezoneOffsetMin: new Date().getTimezoneOffset(),
+  });
+});
+$('voice-end').addEventListener('click', () => voiceCall.end(false));
+$('voice-mute').addEventListener('click', () => voiceCall.toggleMute());
 
 function loadComposerMenus() {
   mentions.load().then(renderPlusTools);
