@@ -270,6 +270,16 @@ impl ChatGptClient {
         text: &str,
         attachments: &[UploadedFile],
     ) -> Result<Vec<StreamEvent>, String> {
+        self.send_message_streaming(text, attachments, |_| {}).await
+    }
+
+    /// Sends a message and calls `on_event` for each delta as the SSE stream arrives.
+    pub async fn send_message_streaming<F: FnMut(&StreamEvent)>(
+        &mut self,
+        text: &str,
+        attachments: &[UploadedFile],
+        mut on_event: F,
+    ) -> Result<Vec<StreamEvent>, String> {
         let reqs = self.get_requirements().await?;
 
         let mut headers = self.headers();
@@ -327,7 +337,7 @@ impl ChatGptClient {
 
         let url = format!("{BASE_URL}/backend-api/f/conversation");
 
-        let resp = self
+        let mut resp = self
             .client
             .post(&url)
             .headers(headers)
@@ -339,11 +349,36 @@ impl ChatGptClient {
         if !resp.status().is_success() {
             let status = resp.status();
             let body_text = resp.text().await.unwrap_or_default();
-            return Err(format!("API error (HTTP {status}): {}", &body_text[..body_text.len().min(300)]));
+            let cut = body_text.char_indices().nth(300).map(|(i, _)| i).unwrap_or(body_text.len());
+            return Err(format!("API error (HTTP {status}): {}", &body_text[..cut]));
         }
 
-        let full_text = resp.text().await.map_err(|e| format!("Stream read error: {e}"))?;
-        let events = parse_sse_stream(&full_text, self);
+        let mut parser = SseParser::default();
+        let mut events = Vec::new();
+        // Bytes, not String: a chunk boundary can split a multi-byte (e.g. Thai) character.
+        let mut pending: Vec<u8> = Vec::new();
+        while let Some(chunk) = resp.chunk().await.map_err(|e| format!("Stream read error: {e}"))? {
+            pending.extend_from_slice(&chunk);
+            while let Some(nl) = pending.iter().position(|&b| b == b'\n') {
+                let line: Vec<u8> = pending.drain(..=nl).collect();
+                let line = String::from_utf8_lossy(&line);
+                if let Some(ev) = parser.feed(line.trim_end_matches(['\r', '\n']), self) {
+                    on_event(&ev);
+                    events.push(ev);
+                }
+            }
+        }
+        if !pending.is_empty() {
+            let line = String::from_utf8_lossy(&pending).to_string();
+            if let Some(ev) = parser.feed(line.trim_end(), self) {
+                on_event(&ev);
+                events.push(ev);
+            }
+        }
+        if let Some(done) = parser.finish(self) {
+            on_event(&done);
+            events.push(done);
+        }
         Ok(events)
     }
 
@@ -649,16 +684,17 @@ fn is_user_visible(msg: &Value) -> bool {
         && msg["recipient"].as_str().unwrap_or("all") == "all"
 }
 
-fn parse_sse_stream(text: &str, client: &mut ChatGptClient) -> Vec<StreamEvent> {
-    let mut events = Vec::new();
-    let mut msg_texts: HashMap<String, String> = HashMap::new();
-    let mut last_message_id = None;
+/// Turns SSE lines into deltas as they arrive. The server sends full message snapshots,
+/// so each delta is the new suffix of that message's text.
+#[derive(Default)]
+struct SseParser {
+    msg_texts: HashMap<String, String>,
+    last_message_id: Option<String>,
+}
 
-    for line in text.lines() {
-        let Some((msg_id, data)) = parse_sse_line(line) else {
-            continue;
-        };
-
+impl SseParser {
+    fn feed(&mut self, line: &str, client: &mut ChatGptClient) -> Option<StreamEvent> {
+        let (msg_id, data) = parse_sse_line(line)?;
         let msg = &data["message"];
         if let Some(conv_id) = data.get("conversation_id").and_then(|c| c.as_str()) {
             client.conversation_id = Some(conv_id.to_string());
@@ -666,46 +702,47 @@ fn parse_sse_stream(text: &str, client: &mut ChatGptClient) -> Vec<StreamEvent> 
         // Tool output (file reads, searches) and assistant calls addressed to tools are
         // internal steps, not part of the visible reply.
         if !is_user_visible(msg) {
-            continue;
+            return None;
         }
         let content_type = msg["content"]["content_type"].as_str().unwrap_or("text");
         let parts = msg["content"]["parts"]
             .as_array()
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|p| p.as_str())
-                    .collect::<Vec<_>>()
-                    .join("")
-            })
+            .map(|arr| arr.iter().filter_map(|p| p.as_str()).collect::<Vec<_>>().join(""))
             .unwrap_or_default();
 
-        let prev = msg_texts.get(&msg_id).map(|s| s.len()).unwrap_or(0);
-        if parts.len() > prev {
-            let delta = parts[prev..].to_string();
-            msg_texts.insert(msg_id.clone(), parts);
-            last_message_id = Some(msg_id.clone());
-            if let Some(model) = msg.pointer("/metadata/model_slug").and_then(|m| m.as_str()) {
-                client.actual_model = Some(model.to_string());
-            }
-
-            let event = match content_type {
-                "thoughts" => StreamEvent::Thinking { delta },
-                "reasoning_recap" => StreamEvent::Reasoning { delta },
-                _ => StreamEvent::Text { delta },
-            };
-            events.push(event);
+        let prev = self.msg_texts.get(&msg_id).map(String::as_str).unwrap_or("");
+        if parts.len() <= prev.len() || !parts.starts_with(prev) {
+            return None;
         }
+        let delta = parts[prev.len()..].to_string();
+        self.msg_texts.insert(msg_id.clone(), parts);
+        self.last_message_id = Some(msg_id);
+        if let Some(model) = msg.pointer("/metadata/model_slug").and_then(|m| m.as_str()) {
+            client.actual_model = Some(model.to_string());
+        }
+        Some(match content_type {
+            "thoughts" => StreamEvent::Thinking { delta },
+            "reasoning_recap" => StreamEvent::Reasoning { delta },
+            _ => StreamEvent::Text { delta },
+        })
     }
 
-    if let Some(mid) = last_message_id {
+    fn finish(self, client: &mut ChatGptClient) -> Option<StreamEvent> {
+        let mid = self.last_message_id?;
         client.parent_message_id = mid.clone();
-        events.push(StreamEvent::Done {
+        Some(StreamEvent::Done {
             conversation_id: client.conversation_id.clone().unwrap_or_default(),
             message_id: mid,
             model: client.actual_model.clone().unwrap_or_default(),
-        });
+        })
     }
+}
 
+#[cfg(test)]
+fn parse_sse_stream(text: &str, client: &mut ChatGptClient) -> Vec<StreamEvent> {
+    let mut parser = SseParser::default();
+    let mut events: Vec<StreamEvent> = text.lines().filter_map(|l| parser.feed(l, client)).collect();
+    events.extend(parser.finish(client));
     events
 }
 
@@ -747,6 +784,21 @@ mod tests {
         assert_eq!(text, "PELICAN-42");
         assert_eq!(client.conversation_id.as_deref(), Some("c1"));
         assert_eq!(client.parent_message_id, "a1");
+    }
+
+    #[test]
+    fn stream_deltas_thai_and_rewrites() {
+        let mut client = ChatGptClient::new("t".into());
+        let line = |text: &str| {
+            format!(r#"data: {{"message":{{"id":"a","author":{{"role":"assistant"}},"recipient":"all","content":{{"content_type":"text","parts":["{text}"]}}}}}}"#)
+        };
+        let mut parser = SseParser::default();
+        let delta = |ev: Option<StreamEvent>| match ev { Some(StreamEvent::Text { delta }) => Some(delta), _ => None };
+        assert_eq!(delta(parser.feed(&line("ab"), &mut client)).as_deref(), Some("ab"));
+        // Not a prefix of the previous text: slicing at the old byte length would split a Thai char.
+        assert_eq!(delta(parser.feed(&line("สวัสดีครับ"), &mut client)), None);
+        assert_eq!(delta(parser.feed(&line("abสวัส"), &mut client)).as_deref(), Some("สวัส"));
+        assert_eq!(delta(parser.feed(&line("abสวัสดี"), &mut client)).as_deref(), Some("ดี"));
     }
 
     fn image_file() -> UploadedFile {
@@ -827,6 +879,29 @@ mod tests {
         let reply: String = events.iter().filter_map(|e| match e { StreamEvent::Text { delta } => Some(delta.as_str()), _ => None }).collect();
         println!("reply: {reply}");
         assert!(!reply.is_empty());
+    }
+
+    /// Checks deltas arrive incrementally (temporary chat).
+    /// Run with `cargo test live_streaming -- --ignored --nocapture`.
+    #[tokio::test]
+    #[ignore]
+    async fn live_streaming() {
+        let token = crate::auth::load_token().expect("saved token");
+        let mut client = ChatGptClient::new(token);
+        client.temp_chat = true;
+        let start = std::time::Instant::now();
+        let mut arrivals = Vec::new();
+        client
+            .send_message_streaming("Count from 1 to 30, one number per line, nothing else.", &[], |ev| {
+                if let StreamEvent::Text { delta } = ev {
+                    arrivals.push((start.elapsed().as_millis(), delta.len()));
+                }
+            })
+            .await
+            .expect("send");
+        println!("text deltas: {}", arrivals.len());
+        println!("first at {} ms, last at {} ms", arrivals.first().unwrap().0, arrivals.last().unwrap().0);
+        assert!(arrivals.len() > 3, "expected several deltas, got {}", arrivals.len());
     }
 
     /// Like live_upload_and_ask, but for a document (my_files + retrieval indexing).

@@ -138,11 +138,16 @@ async function sendText(text, files = [], display = []) {
   setSending(true);
   chat.addUserMessage(text, display);
   chat.startPending();
+  const streamId = 's' + Date.now().toString(36) + Math.random().toString(36).slice(2);
+  let unlisten = null;
   try {
-    const response = await invoke('send_message', { text, attachments: files });
+    unlisten = await window.__TAURI__.event.listen('chat-delta', (e) => {
+      if (e.payload.stream_id === streamId) chat.streamDelta(e.payload.kind, e.payload.delta);
+    });
+    const response = await invoke('send_message', { text, attachments: files, streamId });
     const fullText = response.full_text ||
       response.events.filter((e) => e.type === 'text').map((e) => e.delta).join('');
-    chat.completePending(fullText, toolPairs(response));
+    await chat.completePending(fullText, toolPairs(response));
     const done = response.events.find((e) => e.type === 'done');
     if (done && done.conversation_id) currentConversationId = done.conversation_id;
     await afterTurn();
@@ -150,6 +155,7 @@ async function sendText(text, files = [], display = []) {
     chat.failPending(`Something went wrong: ${e}`);
     handleAuthError(e);
   } finally {
+    if (unlisten) unlisten();
     setSending(false);
   }
 }
@@ -165,7 +171,7 @@ async function startGoal(task) {
     notice.textContent = `${result.complete ? 'Goal complete' : 'Goal stopped'} · ${result.iterations} iterations · ${result.total_calls} API calls`;
     const last = result.responses[result.responses.length - 1];
     const text = last ? last.full_text.replace('[GOAL_COMPLETE]', '').trim() : '';
-    chat.completePending(text, result.responses.flatMap(toolPairs));
+    await chat.completePending(text, result.responses.flatMap(toolPairs));
     await afterTurn();
   } catch (e) {
     notice.textContent = 'Goal failed';

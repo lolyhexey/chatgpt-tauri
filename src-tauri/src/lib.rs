@@ -62,6 +62,13 @@ pub struct ChatResponse {
     pub full_text: String,
 }
 
+#[derive(Serialize, Clone)]
+struct ChatDelta {
+    stream_id: String,
+    kind: &'static str,
+    delta: String,
+}
+
 fn reply_text(events: &[StreamEvent]) -> String {
     events.iter().filter_map(|e| match e {
         StreamEvent::Text { delta } => Some(delta.as_str()),
@@ -140,10 +147,26 @@ async fn chat_with_tools(client: &mut ChatGptClient, message: &str, cwd: &str) -
 async fn send_message(
     text: String,
     attachments: Option<Vec<UploadedFile>>,
+    stream_id: Option<String>,
     state: tauri::State<'_, AppState>,
+    app: tauri::AppHandle,
 ) -> Result<ChatResponse, String> {
+    use tauri::Emitter;
     let mut client = make_client(&state)?;
-    let events = client.send_message(&text, &attachments.unwrap_or_default()).await?;
+    let attachments = attachments.unwrap_or_default();
+    let events = client
+        .send_message_streaming(&text, &attachments, |ev| {
+            let (kind, delta) = match ev {
+                StreamEvent::Text { delta } => ("text", delta),
+                StreamEvent::Thinking { delta } => ("thinking", delta),
+                StreamEvent::Reasoning { delta } => ("reasoning", delta),
+                StreamEvent::Done { .. } => return,
+            };
+            if let Some(id) = &stream_id {
+                let _ = app.emit("chat-delta", ChatDelta { stream_id: id.clone(), kind, delta: delta.clone() });
+            }
+        })
+        .await?;
 
     if let Some(conv_id) = &client.conversation_id {
         *state.conversation_id.lock().unwrap() = Some(conv_id.clone());
