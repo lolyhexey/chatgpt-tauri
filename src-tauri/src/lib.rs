@@ -219,6 +219,21 @@ struct GoalCheck<'a> {
 }
 
 const GOAL_MAX_ROUNDS: u32 = 20;
+/// Stop a goal run after this many rounds in a row where the worker used no tool at all
+/// (only wrote text), like Claude Code's /goal stall stop: if it isn't acting, more rounds
+/// won't help, and each one spends a message. Reset as soon as a round uses a tool.
+const GOAL_MAX_STALLS: u32 = 3;
+
+/// Did this round actually use a tool (a connector/python/web call, a tool result, a web
+/// query, or an image it made), rather than only writing text and thinking? The live stream
+/// already tags each of these as a Step with a known kind, so we read the events we have.
+fn round_acted(events: &[StreamEvent]) -> bool {
+    events.iter().any(|e| match e {
+        StreamEvent::Step { kind, .. } => matches!(kind.as_str(), "tool_call" | "tool_result" | "tool_query"),
+        StreamEvent::Generated { .. } | StreamEvent::Images { .. } => true,
+        _ => false,
+    })
+}
 
 /// The judge's answer: the first {...} in its reply, with "verdict" one of the three words.
 /// Anything else counts as not met (so a garbled answer never ends the goal early).
@@ -325,6 +340,7 @@ async fn goal_rounds(
 ) -> Result<(), String> {
     use tauri::Emitter;
     let stopped = || stop.is_some_and(|rx| *rx.borrow());
+    let mut stalls = 0u32;
     for round in 0..GOAL_MAX_ROUNDS {
         if stopped() {
             break;
@@ -342,6 +358,8 @@ async fn goal_rounds(
             .send_message_streaming(&prompt, &[], |ev| emit_live(app, stream_id, ev))
             .await?;
         let full_text = reply_text(&events);
+        // A round that used no tool, only text, is a stall; tool use resets the streak.
+        if round_acted(&events) { stalls = 0; } else { stalls += 1; }
         // Keep the conversation pointer current so a failed later round still resumes here.
         if let Some(conv_id) = &client.conversation_id {
             *state.conversation_id.lock().unwrap() = Some(conv_id.clone());
@@ -362,6 +380,15 @@ async fn goal_rounds(
         let done = v.verdict != "not_met";
         *verdict = Some(v);
         if done {
+            break;
+        }
+        // Not done, and the worker has only written text for a few rounds running: it isn't
+        // making progress the check can see, so stop instead of spending the rest of the rounds.
+        if stalls >= GOAL_MAX_STALLS {
+            *verdict = Some(GoalVerdict {
+                verdict: "stalled".into(),
+                reason: format!("the agent used no tools for {stalls} rounds in a row"),
+            });
             break;
         }
     }
@@ -644,6 +671,27 @@ mod goal_tests {
         let long = format!("{}END", "x".repeat(20_000));
         let p = judge_prompt("g", &long);
         assert!(p.contains("…") && p.contains("END") && p.len() < 14_000);
+    }
+
+    fn step(kind: &str) -> StreamEvent {
+        StreamEvent::Step { id: "m".into(), kind: kind.into(), title: String::new(), detail: String::new(), tool: String::new(), sources: vec![], icon: String::new() }
+    }
+    fn text(delta: &str) -> StreamEvent {
+        StreamEvent::Text { delta: delta.into(), id: "m".into() }
+    }
+
+    #[test]
+    fn a_round_counts_as_acting_only_when_it_used_a_tool() {
+        // A tool/connector call, its result, or a web query all count as acting.
+        assert!(round_acted(&[text("thinking out loud"), step("tool_call")]));
+        assert!(round_acted(&[step("tool_result")]));
+        assert!(round_acted(&[step("tool_query")]));
+        // Creating an image is acting too.
+        assert!(round_acted(&[StreamEvent::Generated { images: vec![] }]));
+        assert!(round_acted(&[StreamEvent::Images { images: vec![] }]));
+        // Pure reply text, thinking, and the "Worked for Ns" recap are NOT acting.
+        assert!(!round_acted(&[text("a long written answer"), step("thought"), step("recap")]));
+        assert!(!round_acted(&[]));
     }
 }
 

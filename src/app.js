@@ -508,6 +508,7 @@ function goalOutcome(result) {
   const why = v && v.reason ? ' — ' + v.reason : '';
   if (v && v.verdict === 'met') return `Goal complete · ${rounds}${why}`;
   if (v && v.verdict === 'impossible') return `Goal stopped: can't be done · ${rounds}${why}`;
+  if (v && v.verdict === 'stalled') return `Goal stopped: no tool use · ${rounds}${why}`;
   if (v && v.verdict === 'error') return `Goal stopped: the check failed · ${rounds}${why}`;
   if (v && v.verdict === 'not_met' && n >= 20) return `Goal stopped at the ${rounds} limit${why}`;
   return `Goal stopped · ${rounds}`;
