@@ -1,4 +1,5 @@
 var _markedReady = false;
+var _mdStreaming = false;
 
 function _initMarked() {
   if (_markedReady) return;
@@ -10,6 +11,15 @@ function _initMarked() {
   renderer.code = function (code, lang) {
     var text = code || '';
     var name = (lang || '').trim().split(/\s+/)[0];
+    // Mermaid is rendered to an SVG diagram (chatgpt.com shows the diagram, not the code).
+    // Rendering is async, so emit a placeholder holding the source; hydrateMermaid() draws it
+    // after insertion. While the reply still streams, show the code as it types and only draw
+    // the diagram once the block is complete (a half-written diagram can't parse).
+    if (name === 'mermaid' && !_mdStreaming) {
+      return '<div class="mermaid-block" data-mermaid="1">' +
+        '<pre class="mermaid-src">' + escText(text) + '</pre>' +
+      '</div>';
+    }
     var language = name && hljs.getLanguage(name) ? name : 'plaintext';
     var highlighted = hljs.highlight(text, { language: language, ignoreIllegals: true }).value;
     return '<div class="code-block">' +
@@ -33,6 +43,7 @@ function renderMarkdown(text, ctx) {
   if (!text) return '';
   _initMarked();
   if (!_markedReady) return escText(stripCites(text));
+  _mdStreaming = !!(ctx && ctx.streaming);
   try {
     var math = [];
     var html = marked.parse(transformMarkup(extractMath(text, math), ctx));
@@ -220,6 +231,7 @@ function patchHtml(el, html) {
 }
 
 function hydrateMedia(root) {
+  hydrateMermaid(root);
   var len = function (v) {
     if (/^\d+(\.\d+)?$/.test(v)) return v + 'px';
     return /^\d+(\.\d+)?(px|%)$/.test(v) ? v : '';
@@ -242,6 +254,113 @@ function hydrateMedia(root) {
     if (ratio) img.style.aspectRatio = ratio;
     img.addEventListener('error', function () { el.remove(); }, { once: true });
   });
+}
+
+// Mermaid diagrams. The app is single dark theme, so the palette is fixed to the values
+// measured on chatgpt.com (dark): dark-blue nodes, light text, grey links, transparent bg.
+var _mermaidReady = false;
+var _mermaidSeq = 0;
+var MERMAID_CACHE = new Map();
+
+function _initMermaid() {
+  if (_mermaidReady) return true;
+  if (typeof mermaid === 'undefined') return false;
+  try {
+    mermaid.initialize({
+      startOnLoad: false,
+      securityLevel: 'strict',
+      theme: 'base',
+      fontFamily: getComputedStyle(document.documentElement).getPropertyValue('--font') || 'system-ui, sans-serif',
+      themeVariables: {
+        background: 'transparent',
+        primaryColor: '#00284d',
+        primaryBorderColor: 'rgba(255,255,255,0.15)',
+        primaryTextColor: '#ededed',
+        secondaryColor: '#1f2a37',
+        tertiaryColor: '#171717',
+        lineColor: '#afafaf',
+        textColor: '#ededed',
+        fontSize: '15px',
+        edgeLabelBackground: '#303030',
+        clusterBkg: 'rgba(255,255,255,0.04)',
+        clusterBorder: 'rgba(255,255,255,0.15)'
+      },
+      flowchart: { htmlLabels: true, useMaxWidth: true, curve: 'basis' }
+    });
+    _mermaidReady = true;
+  } catch (e) {
+    console.error('mermaid init failed', e);
+  }
+  return _mermaidReady;
+}
+
+function hydrateMermaid(root) {
+  if (!root || !root.querySelectorAll) return;
+  var blocks = root.querySelectorAll('.mermaid-block[data-mermaid="1"]');
+  if (!blocks.length) return;
+  if (!_initMermaid()) { // library missing: fall back to showing the source as a code block
+    blocks.forEach(function (block) { block.removeAttribute('data-mermaid'); block.classList.add('mermaid-failed'); });
+    return;
+  }
+  blocks.forEach(function (block) {
+    block.removeAttribute('data-mermaid');
+    var srcEl = block.querySelector('.mermaid-src');
+    renderOneMermaid(block, srcEl ? srcEl.textContent : '');
+  });
+}
+
+// Draw one diagram, reusing a cached SVG for a source we've already rendered (replies re-render
+// as they stream). On any parse/render failure, keep the source visible as a code block so the
+// message never breaks.
+function renderOneMermaid(block, src) {
+  src = (src || '').trim();
+  if (!src) return;
+  var inject = function (svg) {
+    MERMAID_CACHE.set(src, svg);
+    if (MERMAID_CACHE.size > 200) { var first = MERMAID_CACHE.keys().next().value; MERMAID_CACHE.delete(first); MERMAID_CACHE.set(src, svg); }
+    var view = document.createElement('div');
+    view.className = 'mermaid-view';
+    view.innerHTML = svg;
+    block.insertBefore(view, block.firstChild);
+    block.appendChild(mermaidTools());
+    block.classList.add('mermaid-rendered');
+  };
+  var cached = MERMAID_CACHE.get(src);
+  if (cached) { inject(cached); return; }
+  var id = 'mmd-' + (++_mermaidSeq);
+  try {
+    var out = mermaid.render(id, src);
+    if (out && typeof out.then === 'function') {
+      out.then(function (r) { inject(typeof r === 'string' ? r : r.svg); })
+         .catch(function (e) { mermaidFailed(block, e); });
+    } else if (typeof out === 'string') {
+      inject(out);
+    } else if (out && out.svg) {
+      inject(out.svg);
+    } else {
+      mermaidFailed(block, new Error('no svg'));
+    }
+  } catch (e) {
+    mermaidFailed(block, e);
+  }
+}
+
+function mermaidFailed(block, e) {
+  console.warn('mermaid render failed', e && e.message);
+  block.classList.add('mermaid-failed'); // CSS shows the source as a plain code block
+  // Remove any stray error node mermaid may have left on the document.
+  var stray = document.querySelector('#dmmd-' + _mermaidSeq + ',#mmd-' + _mermaidSeq);
+  if (stray) stray.remove();
+}
+
+function mermaidTools() {
+  var tools = document.createElement('div');
+  tools.className = 'mermaid-tools';
+  tools.innerHTML =
+    '<button type="button" class="mermaid-btn" data-action="mermaid-code" title="View code">' + icon('code-xml', 16) + '</button>' +
+    '<button type="button" class="mermaid-btn" data-action="mermaid-copy" title="Copy source">' + icon('copy', 16) + '</button>' +
+    '<button type="button" class="mermaid-btn" data-action="mermaid-download" title="Download SVG">' + icon('download', 16) + '</button>';
+  return tools;
 }
 
 // Plain-text form for copying: citations dropped, Link/Entity reduced to their text.
@@ -444,6 +563,27 @@ document.addEventListener('click', function (e) {
       var pre = actionEl.closest('.code-block').querySelector('pre');
       pre.classList.toggle('wrap');
       actionEl.classList.toggle('active', pre.classList.contains('wrap'));
+      return;
+    }
+    if (action === 'mermaid-code') {
+      var mblock = actionEl.closest('.mermaid-block');
+      var showing = mblock.classList.toggle('show-code');
+      actionEl.classList.toggle('active', showing);
+      return;
+    }
+    if (action === 'mermaid-copy') {
+      var msrc = actionEl.closest('.mermaid-block').querySelector('.mermaid-src');
+      copyToClipboard(msrc ? msrc.textContent : '').then(function () { flashCopied(actionEl); }, function (err) { console.error(err); });
+      return;
+    }
+    if (action === 'mermaid-download') {
+      var msvg = actionEl.closest('.mermaid-block').querySelector('.mermaid-view svg');
+      if (msvg && window.__TAURI__) {
+        var markup = new XMLSerializer().serializeToString(msvg);
+        if (markup.indexOf('xmlns=') < 0) markup = markup.replace('<svg', '<svg xmlns="http://www.w3.org/2000/svg"');
+        window.__TAURI__.core.invoke('save_svg', { name: 'diagram', svg: markup })
+          .then(function () { flashCopied(actionEl); }, function (err) { console.error('save_svg', err); });
+      }
       return;
     }
   }

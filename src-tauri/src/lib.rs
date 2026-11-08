@@ -645,6 +645,22 @@ async fn download_image(url: String, name: String) -> Result<String, String> {
     save_to_downloads(&bytes, ext, &name)
 }
 
+/// Save a rendered mermaid diagram's SVG (from the frontend) to the Downloads folder, the way
+/// chatgpt.com's diagram "Download" does. The markup is produced locally by the mermaid library,
+/// so no network fetch is involved.
+#[tauri::command]
+fn save_svg(name: String, svg: String) -> Result<String, String> {
+    const MAX: usize = 10 * 1024 * 1024;
+    if svg.len() > MAX {
+        return Err("Diagram is too large.".into());
+    }
+    let head = svg.trim_start();
+    if !(head.starts_with("<svg") || head.starts_with("<?xml")) {
+        return Err("Not an SVG.".into());
+    }
+    save_to_downloads(svg.as_bytes(), "svg", &name)
+}
+
 #[cfg(test)]
 mod goal_tests {
     use super::*;
@@ -723,6 +739,14 @@ mod download_tests {
         assert!(download_image("https://example.com/a.png".into(), "a".into()).await.is_err());
         assert!(download_image("http://images.openai.com/a.png".into(), "a".into()).await.is_err());
     }
+
+    #[test]
+    fn save_svg_rejects_non_svg_without_writing() {
+        // Guards must fail before any file is written, so these never touch Downloads.
+        assert!(save_svg("d".into(), "<html>nope</html>".into()).is_err());
+        assert!(save_svg("d".into(), "alert(1)".into()).is_err());
+        assert!(save_svg("d".into(), format!("<svg>{}", "x".repeat(11 * 1024 * 1024))).is_err());
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -759,6 +783,7 @@ pub fn run() {
             upload_path,
             upload_bytes,
             download_image,
+            save_svg,
             system_hints_cmd,
             voices_cmd,
             models_cmd,

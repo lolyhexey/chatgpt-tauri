@@ -143,7 +143,11 @@ class Chat {
       if (t.text !== text) {
         t.text = text;
         if (g.role === 'user') t.el.firstChild.textContent = text;
-        else t.el.querySelector('.msg-assistant').innerHTML = renderMarkdown(text);
+        else {
+          const body = t.el.querySelector('.msg-assistant');
+          body.innerHTML = renderMarkdown(text);
+          hydrateMermaid(body); // this path sets innerHTML directly, bypassing patchHtml/hydrateMedia
+        }
       }
       const imageKey = g.images.map((x) => x.file_id).join(',');
       if (g.role === 'assistant' && t.imageKey !== imageKey) {

@@ -503,6 +503,95 @@ button { font: inherit; color: inherit; }
 .code-btn:hover { background: rgba(255, 255, 255, 0.1); }
 .code-btn.active { background: rgba(255, 255, 255, 0.12); }
 
+/* Mermaid diagrams: chatgpt.com shows the rendered diagram centered, with a hover toolbar. */
+.mermaid-block {
+  position: relative;
+  margin: 16px 0;
+  min-height: 60px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.02);
+  overflow: hidden;
+}
+.mermaid-view {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  overflow-x: auto;
+}
+.mermaid-view svg { max-width: 100%; height: auto; }
+.mermaid-block.show-code .mermaid-view { display: none; }
+
+/* mermaid v9 ignores the themeVariables we pass, so force the palette measured on chatgpt.com
+   (dark) here. Its injected styles are id-scoped but not !important, so these win. */
+.mermaid-view .node rect,
+.mermaid-view .node polygon,
+.mermaid-view .node circle,
+.mermaid-view .node path { fill: #00284d !important; stroke: rgba(255, 255, 255, 0.15) !important; }
+.mermaid-view .cluster rect { fill: rgba(255, 255, 255, 0.04) !important; stroke: rgba(255, 255, 255, 0.15) !important; }
+.mermaid-view .nodeLabel,
+.mermaid-view .edgeLabel,
+.mermaid-view .cluster-label,
+.mermaid-view text,
+.mermaid-view .label,
+.mermaid-view foreignObject div { color: #ededed !important; fill: #ededed !important; }
+.mermaid-view .edgeLabel,
+.mermaid-view .edgeLabel rect,
+.mermaid-view .labelBkg { background-color: #212121 !important; fill: #212121 !important; }
+.mermaid-view .edgePath path,
+.mermaid-view path.flowchart-link,
+.mermaid-view .flowchart-link { stroke: #afafaf !important; }
+.mermaid-view .arrowheadPath,
+.mermaid-view marker path,
+.mermaid-view .marker { fill: #afafaf !important; stroke: #afafaf !important; }
+/* Source: hidden while the diagram shows; shown on the code toggle or when rendering failed. */
+.mermaid-src {
+  display: none;
+  margin: 0;
+  padding: 16px 20px;
+  overflow-x: auto;
+  font-family: var(--mono);
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text);
+  white-space: pre;
+}
+.mermaid-block.show-code .mermaid-src,
+.mermaid-block.mermaid-failed .mermaid-src { display: block; }
+.mermaid-block.mermaid-failed { background: var(--code-bg); }
+
+.mermaid-tools {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.35);
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+.mermaid-block:hover .mermaid-tools,
+.mermaid-block:focus-within .mermaid-tools { opacity: 1; }
+.mermaid-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: none;
+  color: var(--text);
+  cursor: pointer;
+}
+.mermaid-btn:hover { background: rgba(255, 255, 255, 0.12); }
+.mermaid-btn.active { background: rgba(255, 255, 255, 0.16); }
+
 .code-pre {
   margin: 0;
   padding: 0 20px 18px;
