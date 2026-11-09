@@ -504,14 +504,19 @@ impl ChatGptClient {
         Ok(events)
     }
 
+    /// List chats. With `archived` true, lists archived chats instead of the normal recents.
     pub async fn list_conversations(
         &self,
         offset: u32,
         limit: u32,
+        archived: bool,
     ) -> Result<ConversationList, String> {
-        let url = format!(
+        let mut url = format!(
             "{BASE_URL}/backend-api/conversations?offset={offset}&limit={limit}&order=updated"
         );
+        if archived {
+            url.push_str("&is_archived=true");
+        }
         let resp = self
             .client
             .get(&url)
@@ -528,25 +533,7 @@ impl ChatGptClient {
         }
 
         let data: Value = resp.json().await.map_err(|e| format!("Invalid response: {e}"))?;
-        let items = data
-            .get("items")
-            .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .map(|c| ConversationSummary {
-                        id: c["id"].as_str().unwrap_or("").to_string(),
-                        title: c["title"].as_str().unwrap_or("Untitled").to_string(),
-                        model: c["default_model_slug"]
-                            .as_str()
-                            .or_else(|| c["current_node_model_slug"].as_str())
-                            .unwrap_or("")
-                            .to_string(),
-                        updated: time_key(&c["update_time"]),
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-
+        let items = conversation_items(&data);
         let total = data["total"].as_u64().unwrap_or(0) as u32;
 
         Ok(ConversationList {
@@ -1008,6 +995,11 @@ impl ChatGptClient {
         self.patch_conversation(id, json!({ "is_archived": archived }), "Archive").await
     }
 
+    /// Pin or unpin a chat. ChatGPT stores pinned state as `is_starred`.
+    pub async fn pin_conversation(&self, id: &str, pinned: bool) -> Result<(), String> {
+        self.patch_conversation(id, json!({ "is_starred": pinned }), "Pin").await
+    }
+
     async fn patch_conversation(&self, id: &str, body: Value, what: &str) -> Result<(), String> {
         if id.is_empty() || id.len() > 100 || !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
             return Err("Bad conversation id.".into());
@@ -1089,6 +1081,8 @@ fn conversation_items(data: &Value) -> Vec<ConversationSummary> {
                     .or_else(|| c["current_node_model_slug"].as_str())
                     .unwrap_or("").to_string(),
                 updated: time_key(&c["update_time"]),
+                pinned: c["is_starred"].as_bool().unwrap_or(false),
+                pinned_time: time_key(&c["pinned_time"]),
             }).collect()
         })
         .unwrap_or_default()
@@ -2562,7 +2556,7 @@ mod tests {
     async fn live_generated_image() {
         let token = crate::auth::load_token().expect("saved token");
         let client = ChatGptClient::new(token);
-        let list = client.list_conversations(0, 20).await.expect("list");
+        let list = client.list_conversations(0, 20, false).await.expect("list");
         let conv = list.items.iter().find(|c| c.title.contains("ตกปลา")).expect("image chat");
         let full = client.get_conversation(&conv.id).await.expect("conversation");
         let with_images: Vec<_> = full.messages.iter().filter(|m| !m.generated.is_empty()).collect();

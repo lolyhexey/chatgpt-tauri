@@ -85,6 +85,17 @@
       </div>
     </div>
 
+    <div id="archived-overlay" class="overlay" hidden>
+      <div class="overlay-card overlay-card-wide">
+        <h2>Archived chats</h2>
+        <div id="archived-list" class="archived-list"></div>
+        <div class="overlay-actions spread">
+          <span class="overlay-spacer"></span>
+          <button type="button" class="btn-secondary" id="archived-close-btn">Close</button>
+        </div>
+      </div>
+    </div>
+
     <div id="share-overlay" class="overlay" hidden>
       <div class="overlay-card">
         <h2>Share link to chat</h2>
@@ -134,14 +145,14 @@
       <div class="sb-section">Recents</div>
       <div id="chat-list" class="chat-list"></div>
 
-      <div class="sb-footer">
+      <button type="button" class="sb-footer" id="profile-btn" title="Open profile menu">
         <div class="avatar">CG</div>
         <div class="sb-user">
           <div class="sb-user-name">ChatGPT Desktop</div>
           <div class="sb-user-status" id="status-text">Ready</div>
         </div>
-        <button type="button" class="icon-btn" id="logout-btn" title="Sign out"><span data-icon="log-out"></span></button>
-      </div>
+        <span class="sb-profile-more" data-icon="ellipsis" data-size="18"></span>
+      </button>
     </aside>
 
     <main class="main" id="main">

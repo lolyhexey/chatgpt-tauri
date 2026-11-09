@@ -89,6 +89,7 @@ const sidebar = new Sidebar($('chat-list'), {
   onDelete: deleteConversation,
   onMoveToProject: moveToProjectPicker,
   onChatMenu: chatMenu,
+  onPin: pinChat,
 });
 
 const renameOverlay = $('rename-overlay');
@@ -98,6 +99,8 @@ let renameId = null;
 const shareOverlay = $('share-overlay');
 const shareUrlInput = $('share-url');
 const shareError = $('share-error');
+const archivedOverlay = $('archived-overlay');
+const archivedList = $('archived-list');
 
 const projects = new Projects($('project-list'), { onSelect: openProject });
 let projectsCollapsed = false;
@@ -428,8 +431,9 @@ function chatMenu(chatId, title, anchor) {
     b.addEventListener('click', () => { closeChatMenu(); onClick(); });
     menu.appendChild(b);
   };
+  const isPinned = sidebar.pinnedOf(chatId);
   add('Rename', 'square-pen', () => openRenameChat(chatId, title));
-  add('Pin', 'pin', () => setStatus('Pinning chats isn’t available in the desktop app yet'));
+  add(isPinned ? 'Unpin' : 'Pin', 'pin', () => pinChat(chatId, !isPinned));
   add('Share', 'upload', () => openShareChat(chatId));
   add('Archive', 'archive', () => archiveChat(chatId));
   add('Move to project', 'folder', () => moveToProjectPicker(chatId, anchor));
@@ -440,6 +444,14 @@ function chatMenu(chatId, title, anchor) {
   document.body.appendChild(menu);
   placePopover(menu, anchor);
   closeOnOutside(menu, closeChatMenu);
+}
+
+async function pinChat(chatId, pinned) {
+  try {
+    await invoke('pin_chat_cmd', { id: chatId, pinned });
+    await sidebar.refresh();
+    setStatus(pinned ? 'Chat pinned' : 'Chat unpinned');
+  } catch (e) { setStatus('Could not pin chat'); handleAuthError(e); }
 }
 
 async function archiveChat(chatId) {
@@ -502,6 +514,106 @@ async function copyShare() {
   } catch {
     shareUrlInput.focus();
     shareUrlInput.select();
+  }
+}
+
+// Minimal profile menu on the sidebar footer: entry point for Archived chats + Log out.
+function closeProfileMenu() {
+  const m = document.getElementById('profile-menu');
+  if (m) m.remove();
+}
+function profileMenu(anchor) {
+  closeProfileMenu();
+  const menu = document.createElement('div');
+  menu.id = 'profile-menu';
+  menu.className = 'popover-menu';
+  const add = (label, ic, onClick, variant) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'popover-item' + (variant ? ' ' + variant : '');
+    b.innerHTML = icon(ic, 16);
+    const span = document.createElement('span');
+    span.textContent = label;
+    b.appendChild(span);
+    b.addEventListener('click', () => { closeProfileMenu(); onClick(); });
+    menu.appendChild(b);
+  };
+  add('Archived chats', 'archive', openArchived);
+  const sep = document.createElement('div');
+  sep.className = 'popover-sep';
+  menu.appendChild(sep);
+  add('Log out', 'log-out', doLogout);
+  document.body.appendChild(menu);
+  // Anchor above the footer: place the menu so its bottom sits just above the trigger.
+  const r = anchor.getBoundingClientRect();
+  menu.style.left = Math.min(r.left, window.innerWidth - menu.offsetWidth - 8) + 'px';
+  let top = r.top - menu.offsetHeight - 4;
+  if (top < 8) top = r.bottom + 4;
+  menu.style.top = top + 'px';
+  closeOnOutside(menu, closeProfileMenu);
+}
+
+// Archived chats dialog: list + unarchive + delete, like chatgpt.com's Settings → Archived chats.
+function closeArchived() { archivedOverlay.hidden = true; }
+async function openArchived() {
+  archivedOverlay.hidden = false;
+  archivedList.innerHTML = '<div class="archived-empty">Loading…</div>';
+  try {
+    const data = await invoke('list_archived_cmd', { offset: 0, limit: 100 });
+    renderArchived(data.items || []);
+  } catch (e) {
+    archivedList.innerHTML = '<div class="archived-empty">Could not load archived chats</div>';
+    handleAuthError(e);
+  }
+}
+function renderArchived(items) {
+  archivedList.innerHTML = '';
+  if (!items.length) {
+    archivedList.innerHTML = '<div class="archived-empty">No archived chats</div>';
+    return;
+  }
+  for (const it of items) {
+    const row = document.createElement('div');
+    row.className = 'archived-row';
+    const title = document.createElement('span');
+    title.className = 'archived-title';
+    title.textContent = it.title || 'Untitled';
+    title.title = it.title || 'Untitled';
+    row.appendChild(title);
+
+    const unarchive = document.createElement('button');
+    unarchive.type = 'button';
+    unarchive.className = 'icon-btn archived-action';
+    unarchive.title = 'Unarchive';
+    unarchive.innerHTML = icon('archive', 16);
+    unarchive.addEventListener('click', async () => {
+      try {
+        await invoke('archive_chat_cmd', { id: it.id, archived: false });
+        row.remove();
+        if (!archivedList.children.length) renderArchived([]);
+        await sidebar.refresh();
+        setStatus('Chat unarchived');
+      } catch (e) { setStatus('Could not unarchive'); handleAuthError(e); }
+    });
+    row.appendChild(unarchive);
+
+    const del = document.createElement('button');
+    del.type = 'button';
+    del.className = 'icon-btn archived-action danger';
+    del.title = 'Delete';
+    del.innerHTML = icon('trash', 16);
+    del.addEventListener('click', async () => {
+      try {
+        await invoke('delete_conversation_cmd', { id: it.id });
+        convCache.delete(it.id);
+        row.remove();
+        if (!archivedList.children.length) renderArchived([]);
+        setStatus('Chat deleted');
+      } catch (e) { setStatus('Could not delete'); handleAuthError(e); }
+    });
+    row.appendChild(del);
+
+    archivedList.appendChild(row);
   }
 }
 
@@ -1226,10 +1338,13 @@ searchInput.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') { searchInput.value = ''; sidebar.setFilter(''); searchBox.hidden = true; }
 });
 
-$('logout-btn').addEventListener('click', async () => {
+async function doLogout() {
   try { await invoke('clear_token'); } catch (e) { console.error(e); }
   showLogin('');
-});
+}
+$('profile-btn').addEventListener('click', () => profileMenu($('profile-btn')));
+$('archived-close-btn').addEventListener('click', closeArchived);
+archivedOverlay.addEventListener('click', (e) => { if (e.target === archivedOverlay) closeArchived(); });
 
 $('token-save-btn').addEventListener('click', async () => {
   const token = tokenInput.value.trim();

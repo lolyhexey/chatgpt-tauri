@@ -348,15 +348,53 @@ button { font: inherit; color: inherit; }
 .sb-chat:hover .sb-chat-more, .sb-chat.active .sb-chat-more { opacity: 1; }
 .sb-chat-more:hover { color: var(--text); background: var(--active); }
 
+/* Persistent pin glyph on a pinned chat (hidden on hover so the pin button shows). */
+.sb-chat-pinned {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  color: var(--text-muted);
+}
+.sb-chat:hover .sb-chat-pinned { display: none; }
+/* Hover pin/unpin button */
+.sb-chat-pin {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  opacity: 0;
+  flex: 0 0 auto;
+}
+.sb-chat:hover .sb-chat-pin, .sb-chat.active .sb-chat-pin { opacity: 1; }
+.sb-chat-pin:hover { color: var(--text); background: var(--active); }
+
 .sb-note { padding: 8px 10px; font-size: 13px; color: var(--text-faint); }
 
 .sb-footer {
   display: flex;
   align-items: center;
   gap: 10px;
+  width: 100%;
+  margin: 0;
   padding: 10px 8px 10px 12px;
   flex-shrink: 0;
+  border: 0;
+  border-radius: 10px;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
 }
+.sb-footer:hover { background: var(--hover); }
+.sb-profile-more { flex: 0 0 auto; color: var(--text-muted); display: inline-flex; align-items: center; }
 .avatar {
   width: 28px;
   height: 28px;
@@ -1465,6 +1503,32 @@ button { font: inherit; color: inherit; }
   cursor: pointer;
 }
 .overlay-card button:hover { background: #fff; }
+
+/* Archived chats dialog */
+.overlay-card-wide { width: min(560px, 92vw); }
+.archived-list { max-height: 50vh; overflow-y: auto; margin: 4px 0 4px; }
+.archived-empty { padding: 32px 0; text-align: center; color: var(--text-muted); font-size: 14px; }
+.archived-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 6px 8px 10px;
+  border-radius: 8px;
+}
+.archived-row:hover { background: var(--hover); }
+.archived-title { flex: 1; min-width: 0; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.overlay-card .archived-action {
+  width: 30px;
+  height: 30px;
+  margin: 0;
+  padding: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--text-muted);
+  flex: 0 0 auto;
+}
+.overlay-card .archived-action:hover { background: var(--active); color: var(--text); }
+.overlay-card .archived-action.danger:hover { background: rgba(239, 68, 68, 0.14); color: var(--error); }
 .login-error { min-height: 18px; margin-top: 8px; font-size: 13px; color: var(--error); }
 .hint { margin: 14px 0 0 !important; font-size: 12px !important; }
 .hint code { font-family: var(--mono); font-size: 11px; }

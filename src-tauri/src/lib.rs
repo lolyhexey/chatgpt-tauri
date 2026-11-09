@@ -404,7 +404,23 @@ async fn list_conversations_cmd(
     state: tauri::State<'_, AppState>,
 ) -> Result<ConversationList, String> {
     let client = make_client(&state)?;
-    client.list_conversations(offset, limit).await
+    client.list_conversations(offset, limit, false).await
+}
+
+#[tauri::command]
+async fn list_archived_cmd(
+    offset: u32,
+    limit: u32,
+    state: tauri::State<'_, AppState>,
+) -> Result<ConversationList, String> {
+    let client = make_client(&state)?;
+    client.list_conversations(offset, limit, true).await
+}
+
+#[tauri::command]
+async fn pin_chat_cmd(id: String, pinned: bool, state: tauri::State<'_, AppState>) -> Result<(), String> {
+    let client = make_client(&state)?;
+    client.pin_conversation(&id, pinned).await
 }
 
 #[tauri::command]
@@ -836,6 +852,8 @@ pub fn run() {
             clear_token,
             send_message,
             list_conversations_cmd,
+            list_archived_cmd,
+            pin_chat_cmd,
             get_conversation_cmd,
             stream_status_cmd,
             delete_conversation_cmd,

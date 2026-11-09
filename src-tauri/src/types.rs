@@ -118,6 +118,12 @@ pub struct ConversationSummary {
     pub model: String,
     /// update_time as the server sent it (an ISO string in the list, a number elsewhere).
     pub updated: Option<String>,
+    /// Pinned ("starred") chats sort above the rest, like chatgpt.com.
+    #[serde(default)]
+    pub pinned: bool,
+    /// When it was pinned, for ordering pinned chats among themselves.
+    #[serde(default)]
+    pub pinned_time: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]

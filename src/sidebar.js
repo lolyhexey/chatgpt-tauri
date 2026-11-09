@@ -1,15 +1,21 @@
 class Sidebar {
-  constructor(container, { onSelect, onDelete, onMoveToProject, onChatMenu }) {
+  constructor(container, { onSelect, onDelete, onMoveToProject, onChatMenu, onPin }) {
     this.container = container;
     this.onSelect = onSelect;
     this.onDelete = onDelete;
     this.onMoveToProject = onMoveToProject;
     this.onChatMenu = onChatMenu;
+    this.onPin = onPin;
     this.activeId = null;
     this.items = [];
     this.filter = '';
     this.error = null;
     this.busy = new Set();
+  }
+
+  pinnedOf(id) {
+    const item = this.items.find((i) => i.id === id);
+    return !!(item && item.pinned);
   }
 
   // Chats with a reply still running (shown with a spinner, like chatgpt.com).
@@ -58,9 +64,22 @@ class Sidebar {
       this._note('Could not load chats');
       return;
     }
-    const items = this.filter
+    const base = this.filter
       ? this.items.filter((i) => (i.title || '').toLowerCase().includes(this.filter))
       : this.items;
+    // Pinned chats sort to the top (newest-pinned first), like chatgpt.com; the
+    // server already returns the rest newest-first, so keep that order within each group.
+    const items = base
+      .map((it, idx) => ({ it, idx }))
+      .sort((a, b) => {
+        const ap = a.it.pinned ? 1 : 0, bp = b.it.pinned ? 1 : 0;
+        if (ap !== bp) return bp - ap;
+        if (ap && a.it.pinned_time && b.it.pinned_time && a.it.pinned_time !== b.it.pinned_time) {
+          return a.it.pinned_time < b.it.pinned_time ? 1 : -1;
+        }
+        return a.idx - b.idx;
+      })
+      .map((x) => x.it);
     if (items.length === 0) {
       this._note(this.filter ? 'No matching chats' : 'No chats yet');
       return;
@@ -74,12 +93,30 @@ class Sidebar {
       title.className = 'sb-chat-title';
       title.textContent = item.title || 'Untitled';
       row.appendChild(title);
+      if (item.pinned) {
+        const pin = document.createElement('span');
+        pin.className = 'sb-chat-pinned';
+        pin.title = 'Pinned';
+        pin.innerHTML = icon('pin', 14);
+        row.appendChild(pin);
+      }
       if (this.busy.has(item.id)) {
         const spin = document.createElement('span');
         spin.className = 'sb-chat-busy';
         spin.title = 'Working…';
         row.appendChild(spin);
       }
+
+      const pinBtn = document.createElement('button');
+      pinBtn.type = 'button';
+      pinBtn.className = 'sb-chat-pin';
+      pinBtn.title = item.pinned ? 'Unpin' : 'Pin';
+      pinBtn.innerHTML = icon('pin', 16);
+      pinBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (this.onPin) this.onPin(item.id, !item.pinned);
+      });
+      row.appendChild(pinBtn);
 
       const more = document.createElement('button');
       more.type = 'button';
