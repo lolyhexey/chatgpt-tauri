@@ -28,15 +28,6 @@ let sending = false;
 let goalMode = false;
 let temporaryMode = false;
 
-// Client-local preferences, persisted in the webview (like chatgpt.com's General settings).
-function prefGet(key, fallback) {
-  try { const v = localStorage.getItem('pref.' + key); return v === null ? fallback : v; } catch (e) { return fallback; }
-}
-function prefSet(key, value) {
-  try { localStorage.setItem('pref.' + key, value); } catch (e) { /* just won't persist */ }
-}
-let enterSends = prefGet('enterSends', 'true') !== 'false';
-
 hydrateIcons();
 
 const mentions = new Mentions(chatInput, $('mention-chips'), $('mention-menu'), () => updateSendState());
@@ -111,10 +102,6 @@ const shareUrlInput = $('share-url');
 const shareError = $('share-error');
 const archivedOverlay = $('archived-overlay');
 const archivedList = $('archived-list');
-const settingsOverlay = $('settings-overlay');
-const settingsNav = $('settings-nav');
-const settingsContent = $('settings-content');
-let settingsSection = 'general';
 const tempBtn = $('temp-chat-btn');
 const heroEl = document.querySelector('.hero');
 const starterChips = $('starter-chips');
@@ -571,7 +558,6 @@ function profileMenu(anchor) {
     b.addEventListener('click', () => { closeProfileMenu(); onClick(); });
     menu.appendChild(b);
   };
-  add('Settings', 'settings', () => openSettings());
   add('Archived chats', 'archive', openArchived);
   const sep = document.createElement('div');
   sep.className = 'popover-sep';
@@ -649,131 +635,6 @@ function renderArchived(items) {
 
     archivedList.appendChild(row);
   }
-}
-
-// ---------- Settings dialog (left nav + content), like chatgpt.com ----------
-const SETTINGS_SECTIONS = [
-  { key: 'general', label: 'General', render: renderSettingsGeneral },
-  { key: 'data', label: 'Data controls', render: renderSettingsData },
-];
-function openSettings(section) {
-  settingsSection = section || settingsSection || 'general';
-  if (!SETTINGS_SECTIONS.some((s) => s.key === settingsSection)) settingsSection = SETTINGS_SECTIONS[0].key;
-  settingsOverlay.hidden = false;
-  showSettingsSection(settingsSection);
-}
-function closeSettings() { settingsOverlay.hidden = true; }
-function renderSettingsNav() {
-  settingsNav.innerHTML = '';
-  for (const s of SETTINGS_SECTIONS) {
-    const b = document.createElement('button');
-    b.type = 'button';
-    b.className = 'settings-nav-item' + (s.key === settingsSection ? ' active' : '');
-    b.textContent = s.label;
-    b.addEventListener('click', () => showSettingsSection(s.key));
-    settingsNav.appendChild(b);
-  }
-}
-function showSettingsSection(key) {
-  settingsSection = key;
-  renderSettingsNav();
-  const sec = SETTINGS_SECTIONS.find((s) => s.key === key) || SETTINGS_SECTIONS[0];
-  settingsContent.innerHTML = '';
-  sec.render(settingsContent);
-}
-// A labelled settings row; the caller appends its control to the returned element.
-function settingRow(parent, title, desc) {
-  const row = document.createElement('div');
-  row.className = 'settings-row';
-  const left = document.createElement('div');
-  left.className = 'settings-row-text';
-  const t = document.createElement('div');
-  t.className = 'settings-row-title';
-  t.textContent = title;
-  left.appendChild(t);
-  if (desc) {
-    const d = document.createElement('div');
-    d.className = 'settings-row-desc';
-    d.textContent = desc;
-    left.appendChild(d);
-  }
-  row.appendChild(left);
-  parent.appendChild(row);
-  return row;
-}
-function renderSettingsGeneral(el) {
-  const row = settingRow(el, 'Send shortcut', 'Choose when Enter sends a prompt or inserts a new line');
-  const sel = document.createElement('select');
-  sel.className = 'ps-select';
-  const o1 = document.createElement('option'); o1.value = 'enter'; o1.textContent = 'Enter';
-  const o2 = document.createElement('option'); o2.value = 'mod'; o2.textContent = 'Ctrl/Cmd + Enter';
-  sel.appendChild(o1); sel.appendChild(o2);
-  sel.value = enterSends ? 'enter' : 'mod';
-  sel.addEventListener('change', () => {
-    enterSends = sel.value === 'enter';
-    prefSet('enterSends', enterSends ? 'true' : 'false');
-  });
-  row.appendChild(sel);
-
-  const row2 = settingRow(el, 'Available reasoning efforts', 'Choose which effort levels appear in the model controls');
-  const wrap = document.createElement('div');
-  wrap.className = 'effort-choices';
-  const labels = picker.allEffortLabels();
-  const enabled = new Set(picker.getEfforts());
-  labels.forEach((label, i) => {
-    const lab = document.createElement('label');
-    lab.className = 'effort-choice';
-    const cb = document.createElement('input');
-    cb.type = 'checkbox';
-    cb.checked = enabled.has(i);
-    cb.addEventListener('change', () => {
-      const next = [];
-      wrap.querySelectorAll('input[type=checkbox]').forEach((c, idx) => { if (c.checked) next.push(idx); });
-      if (!next.length) { cb.checked = true; return; } // at least one effort must stay on
-      picker.setEfforts(next);
-    });
-    lab.appendChild(cb);
-    const span = document.createElement('span');
-    span.textContent = label;
-    lab.appendChild(span);
-    wrap.appendChild(lab);
-  });
-  row2.appendChild(wrap);
-}
-function renderSettingsData(el) {
-  const row = settingRow(el, 'Delete all chats', 'Permanently delete all of your conversations. This can’t be undone.');
-  const btn = document.createElement('button');
-  btn.type = 'button';
-  btn.className = 'btn-danger settings-danger';
-  btn.textContent = 'Delete all';
-  // Two-step confirm: the first click arms, a second within 4s performs the delete.
-  let armed = false, timer = null;
-  btn.addEventListener('click', async () => {
-    if (!armed) {
-      armed = true;
-      btn.textContent = 'Click again to confirm';
-      timer = setTimeout(() => { armed = false; btn.textContent = 'Delete all'; }, 4000);
-      return;
-    }
-    clearTimeout(timer);
-    armed = false;
-    btn.disabled = true;
-    btn.textContent = 'Deleting…';
-    try {
-      await invoke('delete_all_cmd');
-      convCache.clear();
-      startNewChat();
-      await sidebar.refresh();
-      setStatus('All chats deleted');
-      closeSettings();
-    } catch (e) {
-      btn.disabled = false;
-      btn.textContent = 'Delete all';
-      setStatus('Could not delete all chats');
-      handleAuthError(e);
-    }
-  });
-  row.appendChild(btn);
 }
 
 function setTitle(title) {
@@ -1511,15 +1372,9 @@ if (tauriWebview && tauriWebview.getCurrentWebview) {
 
 chatInput.addEventListener('keydown', (e) => {
   if (mentions.onKeyDown(e)) return;
-  if (e.key === 'Enter' && !e.isComposing) {
-    const mod = e.ctrlKey || e.metaKey;
-    // Enter-sends mode: plain Enter sends, Shift+Enter is a newline. Newline mode: the
-    // reverse — Ctrl/Cmd+Enter sends, a bare Enter just inserts a line break.
-    const send = enterSends ? (!e.shiftKey && !mod) : mod;
-    if (send) {
-      e.preventDefault();
-      submitComposer();
-    }
+  if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
+    e.preventDefault();
+    submitComposer();
   }
 });
 chatInput.addEventListener('input', () => { autosize(); updateSendState(); mentions.onInput(); });
@@ -1552,8 +1407,6 @@ async function doLogout() {
 $('profile-btn').addEventListener('click', () => profileMenu($('profile-btn')));
 $('archived-close-btn').addEventListener('click', closeArchived);
 archivedOverlay.addEventListener('click', (e) => { if (e.target === archivedOverlay) closeArchived(); });
-$('settings-close-btn').addEventListener('click', closeSettings);
-settingsOverlay.addEventListener('click', (e) => { if (e.target === settingsOverlay) closeSettings(); });
 
 $('token-save-btn').addEventListener('click', async () => {
   const token = tokenInput.value.trim();
