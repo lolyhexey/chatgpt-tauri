@@ -133,6 +133,13 @@ pub struct ConversationList {
     pub has_more: bool,
 }
 
+/// The signed-in user's display name and avatar URL (from /backend-api/me).
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+pub struct Account {
+    pub name: String,
+    pub picture: String,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Conversation {
     pub id: String,

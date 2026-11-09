@@ -426,6 +426,12 @@ async fn pin_chat_cmd(id: String, pinned: bool, state: tauri::State<'_, AppState
 }
 
 #[tauri::command]
+async fn get_account_cmd(state: tauri::State<'_, AppState>) -> Result<Account, String> {
+    let client = make_client(&state)?;
+    client.get_account().await
+}
+
+#[tauri::command]
 async fn get_conversation_cmd(
     id: String,
     state: tauri::State<'_, AppState>,
@@ -856,6 +862,7 @@ pub fn run() {
             list_conversations_cmd,
             list_archived_cmd,
             pin_chat_cmd,
+            get_account_cmd,
             get_conversation_cmd,
             stream_status_cmd,
             delete_conversation_cmd,

@@ -1030,6 +1030,21 @@ impl ChatGptClient {
         }
         Ok(share_url.to_string())
     }
+
+    /// The signed-in user's display name and avatar URL (GET /me).
+    pub async fn get_account(&self) -> Result<Account, String> {
+        let url = format!("{BASE_URL}/backend-api/me");
+        let resp = self.client.get(&url).headers(self.headers()).send().await
+            .map_err(|e| format!("Load account failed: {e}"))?;
+        if !resp.status().is_success() {
+            return Err(format!("Load account failed (HTTP {}).", resp.status()));
+        }
+        let v: Value = resp.json().await.map_err(|e| format!("Invalid response: {e}"))?;
+        Ok(Account {
+            name: v["name"].as_str().unwrap_or("").to_string(),
+            picture: v["picture"].as_str().unwrap_or("").to_string(),
+        })
+    }
 }
 
 /// A project's gizmo object is wrapped differently per endpoint: bare, under "gizmo", or under

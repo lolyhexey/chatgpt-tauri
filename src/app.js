@@ -1419,10 +1419,35 @@ $('token-save-btn').addEventListener('click', async () => {
     loginError.textContent = '';
     await sidebar.refresh();
     projects.refresh();
+    loadAccount();
   } catch (e) {
     loginError.textContent = String(e);
   }
 });
+
+// Show the signed-in account's real name + avatar in the sidebar footer, like chatgpt.com.
+async function loadAccount() {
+  let acc;
+  try { acc = await invoke('get_account_cmd'); } catch (e) { return; }
+  if (!acc || !acc.name) return;
+  const nameEl = document.querySelector('.sb-user-name');
+  const avatarEl = document.querySelector('.sb-footer .avatar');
+  if (nameEl) nameEl.textContent = acc.name;
+  if (avatarEl) {
+    const initials = acc.name.trim().split(/\s+/).slice(0, 2).map((w) => w[0] || '').join('').toUpperCase();
+    avatarEl.textContent = initials || 'CG';
+    if (acc.picture) {
+      // Only swap to the picture once it actually loads, so a blocked URL keeps the initials.
+      const img = new Image();
+      img.onload = () => {
+        avatarEl.textContent = '';
+        avatarEl.style.backgroundImage = 'url("' + acc.picture.replace(/"/g, '%22') + '")';
+        avatarEl.classList.add('has-pic');
+      };
+      img.src = acc.picture;
+    }
+  }
+}
 
 async function init() {
   chat.clear();
@@ -1434,6 +1459,7 @@ async function init() {
     loadComposerMenus();
     await sidebar.refresh();
     projects.refresh();
+    loadAccount();
   }
   chatInput.focus();
 }
