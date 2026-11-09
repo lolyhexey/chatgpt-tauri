@@ -682,9 +682,11 @@ button { font: inherit; color: inherit; }
 .popover-sep { height: 1px; margin: 6px 4px; background: var(--border); }
 
 /* Share-link dialog row */
-.share-row { display: flex; gap: 8px; margin-top: 4px; }
+.share-row { display: flex; align-items: center; gap: 8px; margin-top: 4px; }
 .share-row input { flex: 1; min-width: 0; }
-.share-row button { flex: 0 0 auto; width: auto; padding: 0 16px; }
+/* Higher specificity than the generic `.overlay-card button` (width:100%; margin-top:12px),
+   so the Copy-link button stays compact and the link field fills the row. */
+.overlay-card .share-row button { flex: 0 0 auto; width: auto; height: 40px; margin: 0; padding: 0 18px; }
 
 .pv-empty { padding: 48px 0; text-align: center; }
 .pv-empty-title { margin-bottom: 4px; font-size: 16px; font-weight: 600; }
