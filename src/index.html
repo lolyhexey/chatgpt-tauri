@@ -72,6 +72,35 @@
       </div>
     </div>
 
+    <div id="rename-overlay" class="overlay" hidden>
+      <div class="overlay-card">
+        <h2>Rename chat</h2>
+        <label class="field-label" for="rename-input">Chat name</label>
+        <input id="rename-input" type="text" maxlength="200" spellcheck="false">
+        <div id="rename-error" class="login-error"></div>
+        <div class="overlay-actions">
+          <button type="button" class="btn-secondary" id="rename-cancel-btn">Cancel</button>
+          <button type="button" id="rename-save-btn">Save</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="share-overlay" class="overlay" hidden>
+      <div class="overlay-card">
+        <h2>Share link to chat</h2>
+        <p>Anyone with this link can view the chat as it is now.</p>
+        <div class="share-row">
+          <input id="share-url" type="text" readonly spellcheck="false">
+          <button type="button" id="share-copy-btn">Copy link</button>
+        </div>
+        <div id="share-error" class="login-error"></div>
+        <div class="overlay-actions">
+          <span class="overlay-spacer"></span>
+          <button type="button" class="btn-secondary" id="share-close-btn">Close</button>
+        </div>
+      </div>
+    </div>
+
     <aside class="sidebar">
       <div class="sb-top">
         <div class="sb-brand">ChatGPT</div>
@@ -133,12 +162,16 @@
           <div class="pv-head">
             <span class="pv-icon" data-icon="folder" data-size="24"></span>
             <h1 class="pv-title" id="pv-title"></h1>
+            <button type="button" class="pv-share-btn" id="pv-share-btn" title="Share project"><span data-icon="upload" data-size="16"></span><span>Share</span></button>
             <button type="button" class="icon-btn pv-settings" id="pv-settings-btn" title="Project settings"><span data-icon="ellipsis" data-size="20"></span></button>
           </div>
+          <div id="pv-composer" class="pv-composer"></div>
           <div class="pv-tabs">
             <button type="button" class="pv-tab active" id="pv-tab-chats">Chats</button>
+            <button type="button" class="pv-tab" id="pv-tab-sources">Sources</button>
           </div>
           <div id="pv-chats" class="pv-chats"></div>
+          <div id="pv-sources" class="pv-sources" hidden></div>
         </div>
 
         <div class="composer-wrap">

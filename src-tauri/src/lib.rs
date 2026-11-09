@@ -487,6 +487,25 @@ async fn move_chat_cmd(id: String, gizmo_id: Option<String>, state: tauri::State
 }
 
 #[tauri::command]
+async fn rename_chat_cmd(id: String, title: String, state: tauri::State<'_, AppState>) -> Result<(), String> {
+    let title = title.trim();
+    if title.is_empty() || title.chars().count() > 200 {
+        return Err("Title must be 1–200 characters.".into());
+    }
+    make_client(&state)?.rename_conversation(&id, title).await
+}
+
+#[tauri::command]
+async fn archive_chat_cmd(id: String, archived: bool, state: tauri::State<'_, AppState>) -> Result<(), String> {
+    make_client(&state)?.archive_conversation(&id, archived).await
+}
+
+#[tauri::command]
+async fn share_chat_cmd(id: String, state: tauri::State<'_, AppState>) -> Result<String, String> {
+    make_client(&state)?.share_conversation(&id).await
+}
+
+#[tauri::command]
 fn new_conversation(state: tauri::State<AppState>) {
     *state.conversation_id.lock().unwrap() = None;
     *state.parent_message_id.lock().unwrap() = uuid::Uuid::new_v4().to_string();
@@ -828,6 +847,9 @@ pub fn run() {
             delete_project_cmd,
             list_project_conversations_cmd,
             move_chat_cmd,
+            rename_chat_cmd,
+            archive_chat_cmd,
+            share_chat_cmd,
             new_conversation,
             set_conversation,
             start_goal,

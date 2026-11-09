@@ -997,6 +997,47 @@ impl ChatGptClient {
         }
         Ok(())
     }
+
+    /// Rename a chat (PATCH /conversation/{id} {title}).
+    pub async fn rename_conversation(&self, id: &str, title: &str) -> Result<(), String> {
+        self.patch_conversation(id, json!({ "title": title }), "Rename").await
+    }
+
+    /// Archive or unarchive a chat.
+    pub async fn archive_conversation(&self, id: &str, archived: bool) -> Result<(), String> {
+        self.patch_conversation(id, json!({ "is_archived": archived }), "Archive").await
+    }
+
+    async fn patch_conversation(&self, id: &str, body: Value, what: &str) -> Result<(), String> {
+        if id.is_empty() || id.len() > 100 || !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+            return Err("Bad conversation id.".into());
+        }
+        let url = format!("{BASE_URL}/backend-api/conversation/{id}");
+        let resp = self.client.patch(&url).headers(self.headers()).json(&body)
+            .send().await.map_err(|e| format!("{what} failed: {e}"))?;
+        if !resp.status().is_success() {
+            return Err(format!("{what} failed (HTTP {}).", resp.status()));
+        }
+        Ok(())
+    }
+
+    /// Create a public share link for a chat (POST /share/create); returns the share URL.
+    pub async fn share_conversation(&self, id: &str) -> Result<String, String> {
+        let conv = self.get_conversation(id).await?;
+        let url = format!("{BASE_URL}/backend-api/share/create");
+        let resp = self.client.post(&url).headers(self.headers())
+            .json(&json!({ "conversation_id": id, "current_node_id": conv.current_node, "is_anonymous": true }))
+            .send().await.map_err(|e| format!("Share failed: {e}"))?;
+        if !resp.status().is_success() {
+            return Err(format!("Share failed (HTTP {}).", resp.status()));
+        }
+        let data: Value = resp.json().await.map_err(|e| format!("Invalid response: {e}"))?;
+        let share_url = data["share_url"].as_str().unwrap_or("");
+        if !share_url.starts_with("https://chatgpt.com/share/") {
+            return Err("Unexpected share URL.".into());
+        }
+        Ok(share_url.to_string())
+    }
 }
 
 /// A project's gizmo object is wrapped differently per endpoint: bare, under "gizmo", or under
@@ -2645,148 +2686,5 @@ mod project_parse_tests {
         assert!(project_id_ok("../etc/passwd").is_err());
         assert!(project_id_ok("g-p-a/b").is_err());
         assert!(project_id_ok("").is_err());
-    }
-}
-
-// Throwaway probe: exercises the ChatGPT Projects (gizmo "potion") API against the live account
-// and prints the real JSON shapes/bodies, so the typed client below can be written from ground
-// truth instead of guesswork. Creates and deletes one clearly-named test project. Ignored by
-// default; run with:
-//   cargo test --release -- --ignored probe_projects_api --nocapture
-#[cfg(test)]
-mod project_probe {
-    use super::*;
-
-    fn clip(s: &str, n: usize) -> String { s.chars().take(n).collect() }
-
-    #[tokio::test]
-    #[ignore = "hits the live ChatGPT API; creates and deletes a throwaway project"]
-    async fn probe_projects_api() {
-        let token = crate::auth::load_token().expect("need a token at ~/.chatgpt-cli/token");
-        let c = ChatGptClient::new(token);
-        let base = BASE_URL;
-        let show = |label: &str, status: reqwest::StatusCode, body: &str| {
-            println!("\n===== {label} [{status}] =====\n{}", clip(body, 4000));
-        };
-
-        // a project's gizmo object comes wrapped differently per endpoint: bare, under "gizmo",
-        // or under "resource.gizmo". Dig it out.
-        fn giz(v: &Value) -> &Value {
-            if v.get("gizmo").is_some() { &v["gizmo"] }
-            else if v.get("resource").and_then(|r| r.get("gizmo")).is_some() { &v["resource"]["gizmo"] }
-            else { v }
-        }
-        let pid = |v: &Value| giz(v)["id"].as_str().unwrap_or("").to_string();
-        let pname = |v: &Value| giz(v)["display"]["name"].as_str().unwrap_or("").to_string();
-
-        // 0. cleanup — delete any leftover zz-probe projects from earlier runs (also shows the
-        //    populated sidebar item shape we need to render).
-        let r = c.client.get(format!("{base}/backend-api/gizmos/snorlax/sidebar")).headers(c.headers()).send().await.expect("sidebar");
-        let (s, t) = (r.status(), r.text().await.unwrap_or_default());
-        show("GET gizmos/snorlax/sidebar (raw — item shape + cleanup scan)", s, &t);
-        let list: Value = serde_json::from_str(&t).unwrap_or(Value::Null);
-        if let Some(items) = list["items"].as_array() {
-            for it in items {
-                let (id, name) = (pid(it), pname(it));
-                if name.starts_with("zz-probe") && !id.is_empty() {
-                    let d = c.client.delete(format!("{base}/backend-api/gizmos/{id}")).headers(c.headers()).send().await;
-                    println!(">>> cleaned leftover {id} ({name}) -> {:?}", d.map(|x| x.status()));
-                }
-            }
-        }
-
-        // 1. create
-        let r = c.client.post(format!("{base}/backend-api/projects")).headers(c.headers())
-            .json(&json!({ "name": "zz-probe-delete", "instructions": "" })).send().await.expect("create");
-        let (s, t) = (r.status(), r.text().await.unwrap_or_default());
-        show("POST /projects (create, body={name,instructions})", s, &t);
-        let created: Value = serde_json::from_str(&t).unwrap_or(Value::Null);
-        let id = pid(&created);
-        println!("\n>>> parsed project id = {:?}", id);
-        assert!(!id.is_empty(), "could not parse created project id; see body above");
-
-        // 3. detail
-        let r = c.client.get(format!("{base}/backend-api/gizmos/{id}?include_file_limits=true")).headers(c.headers()).send().await.expect("detail");
-        let (s, t) = (r.status(), r.text().await.unwrap_or_default());
-        show("GET gizmos/{id} (detail)", s, &t);
-
-        // 4. project conversations (empty)
-        let r = c.client.get(format!("{base}/backend-api/gizmos/{id}/conversations?limit=50&owned_only=false")).headers(c.headers()).send().await.expect("convs");
-        let (s, t) = (r.status(), r.text().await.unwrap_or_default());
-        show("GET gizmos/{id}/conversations", s, &t);
-
-        // 5. rename / update
-        let r = c.client.patch(format!("{base}/backend-api/projects/{id}")).headers(c.headers())
-            .json(&json!({ "name": "zz-probe-renamed" })).send().await.expect("patch");
-        let (s, t) = (r.status(), r.text().await.unwrap_or_default());
-        show("PATCH /projects/{id} (rename, body={name})", s, &t);
-
-        // 6. sidebar list (populated, after) — reveals the per-project shape we must render
-        let r = c.client.get(format!("{base}/backend-api/gizmos/snorlax/sidebar")).headers(c.headers()).send().await.expect("sidebar2");
-        let (s, t) = (r.status(), r.text().await.unwrap_or_default());
-        show("GET gizmos/snorlax/sidebar (after, populated)", s, &t);
-
-        // 7. delete (cleanup)
-        let r = c.client.delete(format!("{base}/backend-api/gizmos/{id}")).headers(c.headers()).send().await.expect("delete");
-        let (s, t) = (r.status(), r.text().await.unwrap_or_default());
-        show("DELETE gizmos/{id} (cleanup)", s, &t);
-        assert!(s.is_success(), "cleanup delete failed — project {id} may still exist");
-    }
-
-    // Confirm the request bodies for memory_scope (6b) and project file register (8), using the
-    // live account. Creates and deletes a throwaway project + knowledge file. No message is sent.
-    #[tokio::test]
-    #[ignore = "hits the live ChatGPT API; creates and deletes a throwaway project + file"]
-    async fn probe_memory_and_files() {
-        let token = crate::auth::load_token().expect("need a token at ~/.chatgpt-cli/token");
-        let c = ChatGptClient::new(token);
-        let base = BASE_URL;
-        let show = |label: &str, status: reqwest::StatusCode, body: &str| {
-            println!("\n===== {label} [{status}] =====\n{}", clip(body, 1200));
-        };
-
-        let r = c.client.post(format!("{base}/backend-api/projects")).headers(c.headers())
-            .json(&json!({ "name": "zz-extras", "instructions": "" })).send().await.expect("create");
-        let created: Value = r.json().await.unwrap_or(Value::Null);
-        let id = created["resource"]["gizmo"]["id"].as_str().unwrap_or("").to_string();
-        println!(">>> project {id}");
-        assert!(!id.is_empty());
-
-        // 6b: which memory_scope value does "Project-only" send?
-        for scope in ["project_v2", "project-only"] {
-            let r = c.client.patch(format!("{base}/backend-api/projects/{id}")).headers(c.headers())
-                .json(&json!({ "name": "zz-extras", "instructions": "", "emoji": Value::Null, "theme": Value::Null, "memory_scope": scope }))
-                .send().await.expect("patch");
-            let (s, t) = (r.status(), r.text().await.unwrap_or_default());
-            show(&format!("PATCH memory_scope={scope}"), s, &t);
-            if s.is_success() {
-                let g = c.client.get(format!("{base}/backend-api/gizmos/{id}?include_file_limits=true")).headers(c.headers()).send().await.unwrap();
-                let gv: Value = g.json().await.unwrap_or(Value::Null);
-                println!(">>> reflected memory_scope = {:?}", gv["gizmo"]["memory_scope"]);
-            }
-        }
-
-        // 8: upload a knowledge file, register it with the project, list, (project delete removes it)
-        let file = c.upload_file("zz-knowledge.txt", b"project knowledge test file\n".to_vec()).await.expect("upload");
-        println!(">>> uploaded file_id = {}", file.id);
-        let candidates = [
-            ("loc=fs", json!({ "files": [{ "file_id": file.id, "name": file.name, "location": "fs" }] })),
-            ("loc=sediment", json!({ "files": [{ "file_id": file.id, "name": file.name, "location": "sediment" }] })),
-        ];
-        for (label, body) in candidates {
-            let r = c.client.post(format!("{base}/backend-api/projects/{id}/files")).headers(c.headers())
-                .json(&body).send().await.expect("register");
-            let (s, t) = (r.status(), r.text().await.unwrap_or_default());
-            show(&format!("POST files body={label}"), s, &t);
-            if s.is_success() {
-                let g = c.client.get(format!("{base}/backend-api/gizmos/{id}?include_file_limits=true")).headers(c.headers()).send().await.unwrap();
-                let gv: Value = g.json().await.unwrap_or(Value::Null);
-                println!(">>> project detail files[] after register = {}", gv["files"]);
-                break;
-            }
-        }
-
-        let r = c.client.delete(format!("{base}/backend-api/gizmos/{id}")).headers(c.headers()).send().await.expect("del");
-        println!(">>> delete project -> {}", r.status());
     }
 }

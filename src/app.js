@@ -88,7 +88,16 @@ const sidebar = new Sidebar($('chat-list'), {
   onSelect: openConversation,
   onDelete: deleteConversation,
   onMoveToProject: moveToProjectPicker,
+  onChatMenu: chatMenu,
 });
+
+const renameOverlay = $('rename-overlay');
+const renameInput = $('rename-input');
+const renameError = $('rename-error');
+let renameId = null;
+const shareOverlay = $('share-overlay');
+const shareUrlInput = $('share-url');
+const shareError = $('share-error');
 
 const projects = new Projects($('project-list'), { onSelect: openProject });
 let projectsCollapsed = false;
@@ -97,6 +106,10 @@ const projectNameInput = $('project-name-input');
 const projectError = $('project-error');
 const pvTitle = $('pv-title');
 const pvChats = $('pv-chats');
+const pvSources = $('pv-sources');
+const composerWrap = document.querySelector('.composer-wrap');
+const composerBody = composerWrap.parentNode; // its normal home (bottom of .body)
+const pvComposer = $('pv-composer');
 let currentProjectId = null;
 let currentProjectName = '';
 const psOverlay = $('project-settings-overlay');
@@ -122,6 +135,9 @@ projectNameInput.addEventListener('keydown', (e) => {
 projectOverlay.addEventListener('click', (e) => { if (e.target === projectOverlay) closeCreateProject(); });
 
 $('pv-settings-btn').addEventListener('click', () => openProjectSettings(currentProjectId));
+$('pv-tab-chats').addEventListener('click', () => showProjectTab('chats'));
+$('pv-tab-sources').addEventListener('click', () => showProjectTab('sources'));
+$('pv-share-btn').addEventListener('click', () => setStatus('Project sharing isn’t available in the desktop app yet'));
 $('ps-cancel-btn').addEventListener('click', closeProjectSettings);
 $('ps-save-btn').addEventListener('click', saveProjectSettings);
 $('ps-delete-btn').addEventListener('click', openDeleteConfirm);
@@ -134,13 +150,47 @@ psName.addEventListener('keydown', (e) => {
 psOverlay.addEventListener('click', (e) => { if (e.target === psOverlay) closeProjectSettings(); });
 pdOverlay.addEventListener('click', (e) => { if (e.target === pdOverlay) closeDeleteConfirm(); });
 
+$('rename-cancel-btn').addEventListener('click', closeRename);
+$('rename-save-btn').addEventListener('click', saveRename);
+renameInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') { e.preventDefault(); saveRename(); }
+  else if (e.key === 'Escape') closeRename();
+});
+renameOverlay.addEventListener('click', (e) => { if (e.target === renameOverlay) closeRename(); });
+$('share-copy-btn').addEventListener('click', copyShare);
+$('share-close-btn').addEventListener('click', closeShare);
+shareOverlay.addEventListener('click', (e) => { if (e.target === shareOverlay) closeShare(); });
+
 // Leave the project landing (if any) and return to the normal chat area.
 function exitProjectView() {
   if (!mainEl.classList.contains('project-open')) return;
+  composerBody.appendChild(composerWrap); // return the composer to the bottom of the chat area
   mainEl.classList.remove('project-open');
   currentProjectId = null;
   projects.setActive(null);
   chatInput.placeholder = 'Ask ChatGPT';
+}
+
+// Switch the project landing between its Chats and Sources tabs.
+function showProjectTab(tab) {
+  const isChats = tab !== 'sources';
+  $('pv-tab-chats').classList.toggle('active', isChats);
+  $('pv-tab-sources').classList.toggle('active', !isChats);
+  pvChats.hidden = !isChats;
+  pvSources.hidden = isChats;
+  if (!isChats && !pvSources.childElementCount) {
+    const note = document.createElement('div');
+    note.className = 'pv-empty';
+    const t = document.createElement('div');
+    t.className = 'pv-empty-title';
+    t.textContent = 'Sources';
+    const s = document.createElement('div');
+    s.className = 'pv-empty-sub';
+    s.textContent = 'Project files aren’t available in the desktop app yet.';
+    note.appendChild(t);
+    note.appendChild(s);
+    pvSources.appendChild(note);
+  }
 }
 
 // Show a project's landing view (header + its chats), like chatgpt.com.
@@ -149,6 +199,8 @@ async function openProject(id, name) {
   currentProjectName = name || projects.nameOf(id) || 'Project';
   projects.setActive(id);
   mainEl.classList.add('project-open');
+  pvComposer.appendChild(composerWrap); // chatgpt.com puts the composer inside the project landing
+  showProjectTab('chats');
   setTitle(currentProjectName);
   pvTitle.textContent = currentProjectName;
   chatInput.placeholder = `New chat in ${currentProjectName}`;
@@ -327,22 +379,130 @@ function moveToProjectPicker(chatId, anchor) {
     menu.appendChild(b);
   }
   document.body.appendChild(menu);
+  placePopover(menu, anchor);
+  closeOnOutside(menu, closeProjectPicker);
+}
+
+// Position a floating popover under (or, if cramped, above) an anchor, clamped to the viewport.
+function placePopover(menu, anchor) {
   const r = anchor.getBoundingClientRect();
   const mh = menu.offsetHeight;
   let top = r.bottom + 4;
   if (top + mh > window.innerHeight - 8) {
-    // not enough room below: flip above the anchor, then clamp to the viewport.
     top = r.top - mh - 4;
     if (top < 8) top = Math.max(8, window.innerHeight - mh - 8);
   }
   menu.style.top = top + 'px';
   menu.style.left = Math.min(r.left, window.innerWidth - menu.offsetWidth - 8) + 'px';
+}
+// Close a popover the next time the user clicks outside it.
+function closeOnOutside(menu, closeFn) {
   setTimeout(() => {
     const onDoc = (e) => {
-      if (!menu.contains(e.target)) { closeProjectPicker(); document.removeEventListener('click', onDoc, true); }
+      if (!menu.contains(e.target)) { closeFn(); document.removeEventListener('click', onDoc, true); }
     };
     document.addEventListener('click', onDoc, true);
   }, 0);
+}
+
+function closeChatMenu() {
+  const m = document.getElementById('chat-menu');
+  if (m) m.remove();
+}
+// The chat "..." context menu, matching the one on chatgpt.com
+// (Rename / Pin / Share / Archive / Move to project / Delete).
+function chatMenu(chatId, title, anchor) {
+  closeChatMenu();
+  closeProjectPicker();
+  const menu = document.createElement('div');
+  menu.id = 'chat-menu';
+  menu.className = 'popover-menu';
+  const add = (label, ic, onClick, variant) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'popover-item' + (variant ? ' ' + variant : '');
+    b.innerHTML = icon(ic, 16);
+    const span = document.createElement('span');
+    span.textContent = label;
+    b.appendChild(span);
+    b.addEventListener('click', () => { closeChatMenu(); onClick(); });
+    menu.appendChild(b);
+  };
+  add('Rename', 'square-pen', () => openRenameChat(chatId, title));
+  add('Pin', 'pin', () => setStatus('Pinning chats isn’t available in the desktop app yet'));
+  add('Share', 'upload', () => openShareChat(chatId));
+  add('Archive', 'archive', () => archiveChat(chatId));
+  add('Move to project', 'folder', () => moveToProjectPicker(chatId, anchor));
+  const sep = document.createElement('div');
+  sep.className = 'popover-sep';
+  menu.appendChild(sep);
+  add('Delete', 'trash', () => deleteConversation(chatId), 'danger');
+  document.body.appendChild(menu);
+  placePopover(menu, anchor);
+  closeOnOutside(menu, closeChatMenu);
+}
+
+async function archiveChat(chatId) {
+  try {
+    await invoke('archive_chat_cmd', { id: chatId, archived: true });
+    convCache.delete(chatId);
+    if (chatId === currentConversationId) startNewChat();
+    await sidebar.refresh();
+    setStatus('Chat archived');
+  } catch (e) { setStatus('Could not archive chat'); handleAuthError(e); }
+}
+
+// Rename dialog (shared #rename-overlay).
+function openRenameChat(chatId, title) {
+  renameId = chatId;
+  renameInput.value = title || '';
+  renameError.textContent = '';
+  renameOverlay.hidden = false;
+  renameInput.focus();
+  renameInput.select();
+}
+function closeRename() { renameOverlay.hidden = true; renameId = null; }
+async function saveRename() {
+  const id = renameId;
+  const title = renameInput.value.trim();
+  if (!id) return;
+  if (!title) { renameError.textContent = 'Enter a chat name'; return; }
+  try {
+    await invoke('rename_chat_cmd', { id, title });
+    closeRename();
+    if (id === currentConversationId) setTitle(title);
+    await sidebar.refresh();
+    setStatus('Chat renamed');
+  } catch (e) { renameError.textContent = 'Could not rename chat'; handleAuthError(e); }
+}
+
+// Share dialog (shared #share-overlay): creates a public link to the chat.
+function closeShare() { shareOverlay.hidden = true; }
+async function openShareChat(chatId) {
+  shareError.textContent = '';
+  shareUrlInput.value = 'Creating link…';
+  shareOverlay.hidden = false;
+  try {
+    const url = await invoke('share_chat_cmd', { id: chatId });
+    shareUrlInput.value = url;
+    shareUrlInput.focus();
+    shareUrlInput.select();
+  } catch (e) {
+    shareUrlInput.value = '';
+    shareError.textContent = 'Could not create share link';
+    handleAuthError(e);
+  }
+}
+async function copyShare() {
+  const url = shareUrlInput.value;
+  if (!url || !url.startsWith('http')) return;
+  try {
+    await navigator.clipboard.writeText(url);
+    setStatus('Link copied');
+  } catch {
+    shareUrlInput.focus();
+    shareUrlInput.select();
+  }
 }
 
 function setTitle(title) {

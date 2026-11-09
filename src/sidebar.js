@@ -1,9 +1,10 @@
 class Sidebar {
-  constructor(container, { onSelect, onDelete, onMoveToProject }) {
+  constructor(container, { onSelect, onDelete, onMoveToProject, onChatMenu }) {
     this.container = container;
     this.onSelect = onSelect;
     this.onDelete = onDelete;
     this.onMoveToProject = onMoveToProject;
+    this.onChatMenu = onChatMenu;
     this.activeId = null;
     this.items = [];
     this.filter = '';
@@ -80,29 +81,16 @@ class Sidebar {
         row.appendChild(spin);
       }
 
-      if (this.onMoveToProject) {
-        const mv = document.createElement('button');
-        mv.type = 'button';
-        mv.className = 'sb-chat-move';
-        mv.title = 'Move to project';
-        mv.innerHTML = icon('folder', 16);
-        mv.addEventListener('click', (e) => {
-          e.stopPropagation();
-          this.onMoveToProject(item.id, mv);
-        });
-        row.appendChild(mv);
-      }
-
-      const del = document.createElement('button');
-      del.type = 'button';
-      del.className = 'sb-chat-del';
-      del.title = 'Delete chat';
-      del.innerHTML = icon('trash', 16);
-      del.addEventListener('click', (e) => {
+      const more = document.createElement('button');
+      more.type = 'button';
+      more.className = 'sb-chat-more';
+      more.title = 'Chat options';
+      more.innerHTML = icon('ellipsis', 18);
+      more.addEventListener('click', (e) => {
         e.stopPropagation();
-        this.onDelete(item.id, item.title);
+        this.onChatMenu(item.id, item.title, more);
       });
-      row.appendChild(del);
+      row.appendChild(more);
 
       row.addEventListener('click', () => this.onSelect(item.id));
       this.container.appendChild(row);
