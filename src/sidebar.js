@@ -74,8 +74,11 @@ class Sidebar {
       .sort((a, b) => {
         const ap = a.it.pinned ? 1 : 0, bp = b.it.pinned ? 1 : 0;
         if (ap !== bp) return bp - ap;
-        if (ap && a.it.pinned_time && b.it.pinned_time && a.it.pinned_time !== b.it.pinned_time) {
-          return a.it.pinned_time < b.it.pinned_time ? 1 : -1;
+        if (ap) {
+          // Both pinned: newest-pinned first. A missing pinned_time sorts as "" (oldest),
+          // so the comparison always applies and the order stays transitive.
+          const at = a.it.pinned_time || '', bt = b.it.pinned_time || '';
+          if (at !== bt) return at < bt ? 1 : -1;
         }
         return a.idx - b.idx;
       })

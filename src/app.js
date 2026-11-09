@@ -418,13 +418,17 @@ function placePopover(menu, anchor) {
   menu.style.top = top + 'px';
   menu.style.left = Math.min(r.left, window.innerWidth - menu.offsetWidth - 8) + 'px';
 }
-// Close a popover the next time the user clicks outside it.
+// Close a popover on the next outside click or Escape, like chatgpt.com's menus.
 function closeOnOutside(menu, closeFn) {
   setTimeout(() => {
-    const onDoc = (e) => {
-      if (!menu.contains(e.target)) { closeFn(); document.removeEventListener('click', onDoc, true); }
+    const cleanup = () => {
+      document.removeEventListener('click', onDoc, true);
+      document.removeEventListener('keydown', onKey, true);
     };
+    const onDoc = (e) => { if (!menu.contains(e.target)) { closeFn(); cleanup(); } };
+    const onKey = (e) => { if (e.key === 'Escape') { closeFn(); cleanup(); } };
     document.addEventListener('click', onDoc, true);
+    document.addEventListener('keydown', onKey, true);
   }, 0);
 }
 
@@ -509,17 +513,23 @@ async function saveRename() {
 }
 
 // Share dialog (shared #share-overlay): creates a public link to the chat.
-function closeShare() { shareOverlay.hidden = true; }
+// A generation counter guards the shared input against a stale/slow request from a
+// previously-opened chat overwriting a newer one.
+let shareReqGen = 0;
+function closeShare() { shareReqGen++; shareOverlay.hidden = true; }
 async function openShareChat(chatId) {
+  const gen = ++shareReqGen;
   shareError.textContent = '';
   shareUrlInput.value = 'Creating link…';
   shareOverlay.hidden = false;
   try {
     const url = await invoke('share_chat_cmd', { id: chatId });
+    if (gen !== shareReqGen) return; // superseded by a newer Share (or the dialog was closed)
     shareUrlInput.value = url;
     shareUrlInput.focus();
     shareUrlInput.select();
   } catch (e) {
+    if (gen !== shareReqGen) return;
     shareUrlInput.value = '';
     shareError.textContent = 'Could not create share link';
     handleAuthError(e);
@@ -1434,6 +1444,10 @@ async function loadAccount() {
   const avatarEl = document.querySelector('.sb-footer .avatar');
   if (nameEl) nameEl.textContent = acc.name;
   if (avatarEl) {
+    // Clear any previous account's photo first, so switching to an account without one
+    // falls back to initials instead of keeping the old picture.
+    avatarEl.style.backgroundImage = '';
+    avatarEl.classList.remove('has-pic');
     const initials = acc.name.trim().split(/\s+/).slice(0, 2).map((w) => w[0] || '').join('').toUpperCase();
     avatarEl.textContent = initials || 'CG';
     if (acc.picture) {

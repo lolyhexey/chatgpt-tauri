@@ -524,6 +524,7 @@ button { font: inherit; color: inherit; }
 }
 .main.project-open .messages { display: none; }
 .main.project-open .hero { display: none; }
+.main.project-open .starter-chips { display: none; }
 .main.project-open .body { justify-content: flex-start; padding-bottom: 0; }
 .main.project-open .project-view { display: flex; }
 
