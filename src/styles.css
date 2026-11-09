@@ -1554,6 +1554,26 @@ button { font: inherit; color: inherit; }
 }
 .overlay-card .archived-action:hover { background: var(--active); color: var(--text); }
 .overlay-card .archived-action.danger:hover { background: rgba(239, 68, 68, 0.14); color: var(--error); }
+
+/* Settings dialog (left nav + content panel) */
+.settings-card { width: min(760px, 94vw); max-height: 86vh; padding: 0; display: flex; flex-direction: column; overflow: hidden; }
+.settings-head { display: flex; align-items: center; justify-content: space-between; padding: 16px 20px; border-bottom: 1px solid var(--border); }
+.settings-head h2 { margin: 0; font-size: 18px; }
+.overlay-card .settings-head .icon-btn { width: 32px; height: 32px; margin: 0; padding: 0; border-radius: 8px; background: none; color: var(--text-muted); }
+.overlay-card .settings-head .icon-btn:hover { background: var(--hover); color: var(--text); }
+.settings-body { display: flex; min-height: 0; flex: 1; }
+.settings-nav { width: 196px; flex: 0 0 auto; padding: 12px; border-right: 1px solid var(--border); overflow-y: auto; display: flex; flex-direction: column; gap: 2px; }
+.overlay-card .settings-nav-item { width: 100%; height: auto; margin: 0; padding: 8px 12px; border: 0; border-radius: 8px; background: none; color: var(--text); font: inherit; font-size: 14px; text-align: left; cursor: pointer; }
+.overlay-card .settings-nav-item:hover { background: var(--hover); }
+.overlay-card .settings-nav-item.active { background: var(--active); }
+.settings-content { flex: 1; min-width: 0; padding: 14px 22px; overflow-y: auto; }
+.settings-row { display: flex; align-items: center; gap: 16px; padding: 16px 0; border-bottom: 1px solid var(--border); }
+.settings-row:last-child { border-bottom: 0; }
+.settings-row-text { flex: 1; min-width: 0; }
+.settings-row-title { font-size: 14px; font-weight: 500; }
+.settings-row-desc { margin-top: 3px; font-size: 13px; line-height: 18px; color: var(--text-muted); }
+.settings-row .ps-select { width: auto; margin: 0; flex: 0 0 auto; }
+.overlay-card .settings-row .settings-danger { width: auto; height: 36px; margin: 0; padding: 0 16px; flex: 0 0 auto; }
 .login-error { min-height: 18px; margin-top: 8px; font-size: 13px; color: var(--error); }
 .hint { margin: 14px 0 0 !important; font-size: 12px !important; }
 .hint code { font-family: var(--mono); font-size: 11px; }
