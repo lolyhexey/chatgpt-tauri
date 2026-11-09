@@ -161,11 +161,13 @@ async function openProject(id, name) {
     const chats = await invoke('list_project_conversations_cmd', { id });
     if (currentProjectId === id) renderProjectChats(chats);
   } catch (e) {
-    pvChats.innerHTML = '';
-    const err = document.createElement('div');
-    err.className = 'sb-note';
-    err.textContent = 'Could not load chats';
-    pvChats.appendChild(err);
+    if (currentProjectId === id) {
+      pvChats.innerHTML = '';
+      const err = document.createElement('div');
+      err.className = 'sb-note';
+      err.textContent = 'Could not load chats';
+      pvChats.appendChild(err);
+    }
     handleAuthError(e);
   }
 }
@@ -240,9 +242,12 @@ async function openProjectSettings(id) {
   if (!id) return;
   psEditId = id;
   psError.textContent = '';
-  psName.value = projects.nameOf(id) || '';
-  psInstructions.value = '';
-  psMemory.value = 'global';
+  // Pre-fill from the cached project (the sidebar list already carries name, instructions and
+  // memory scope) so saving before the detail GET returns can't wipe real values.
+  const cached = projects.items.find((i) => i.id === id) || {};
+  psName.value = cached.name || projects.nameOf(id) || '';
+  psInstructions.value = cached.instructions || '';
+  psMemory.value = cached.memory_scope === 'project_v2' ? 'project_v2' : 'global';
   psOverlay.hidden = false;
   psName.focus();
   try {
@@ -323,7 +328,14 @@ function moveToProjectPicker(chatId, anchor) {
   }
   document.body.appendChild(menu);
   const r = anchor.getBoundingClientRect();
-  menu.style.top = (r.bottom + 4) + 'px';
+  const mh = menu.offsetHeight;
+  let top = r.bottom + 4;
+  if (top + mh > window.innerHeight - 8) {
+    // not enough room below: flip above the anchor, then clamp to the viewport.
+    top = r.top - mh - 4;
+    if (top < 8) top = Math.max(8, window.innerHeight - mh - 8);
+  }
+  menu.style.top = top + 'px';
   menu.style.left = Math.min(r.left, window.innerWidth - menu.offsetWidth - 8) + 'px';
   setTimeout(() => {
     const onDoc = (e) => {
@@ -440,6 +452,7 @@ function autosize() {
 }
 
 async function openConversation(id) {
+  exitProjectView(); // leaving the project landing, even on the already-open fast path below
   sidebar.setActive(id);
   setTitle(sidebar.titleOf(id));
   // Still replying there: show its live view instead of reloading.
@@ -657,7 +670,9 @@ function learnThread(v, events) {
 async function sendText(text, files = [], display = [], systemHints = []) {
   text = text.trim();
   if ((!text && !files.length) || sending) return;
-  if (goalMode && text) return startGoal(text);
+  // Goal mode isn't project-scoped yet, but it must still leave the project landing so its
+  // reply is visible (not hidden behind the project view).
+  if (goalMode && text) { exitProjectView(); return startGoal(text); }
 
   // Sending from a project landing starts a new chat inside that project (carries gizmo_id).
   if (mainEl.classList.contains('project-open')) {
@@ -940,6 +955,9 @@ const voiceCall = new VoiceCall(voiceUi, {
 voiceBtn.addEventListener('click', () => {
   if (voiceCall.active) { voiceCall.end(false); return; }
   if (sending) return;
+  // From a project landing a call begins a fresh chat (and leaves the landing so the transcript
+  // is visible), never continuing whatever chat was open before entering the project.
+  if (mainEl.classList.contains('project-open')) startNewChat();
   // Like chatgpt.com: from an open chat the call continues it (the transcript is added after
   // its messages); otherwise it starts a new chat. A chat that is still replying can't be
   // continued, so that case starts a new one too.

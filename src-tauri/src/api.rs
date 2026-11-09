@@ -912,12 +912,30 @@ impl ChatGptClient {
         Ok(project_from_gizmo(giz_of(&data)))
     }
 
+    /// The project's current display.emoji and display.theme, so an update can preserve them
+    /// (the PATCH replaces the whole display block). Falls back to null if the read fails.
+    async fn project_display(&self, id: &str) -> (Value, Value) {
+        let url = format!("{BASE_URL}/backend-api/gizmos/{id}?include_file_limits=true");
+        match self.client.get(&url).headers(self.headers()).send().await {
+            Ok(r) => match r.json::<Value>().await {
+                Ok(v) => {
+                    let d = &giz_of(&v)["display"];
+                    (d["emoji"].clone(), d["theme"].clone())
+                }
+                Err(_) => (Value::Null, Value::Null),
+            },
+            Err(_) => (Value::Null, Value::Null),
+        }
+    }
+
     /// Rename / edit a project (PATCH /backend-api/projects/{id}). The server requires the full
-    /// {name, instructions, emoji, theme} set; emoji/theme may be null.
+    /// {name, instructions, emoji, theme} set and replaces that block, so emoji and theme (which
+    /// can only be set on chatgpt.com) are read first and echoed back rather than nulled.
     pub async fn update_project(&self, id: &str, name: &str, instructions: &str, memory_scope: Option<&str>) -> Result<Project, String> {
         let id = project_id_ok(id)?;
+        let (emoji, theme) = self.project_display(id).await;
         let url = format!("{BASE_URL}/backend-api/projects/{id}");
-        let mut body = json!({ "name": name, "instructions": instructions, "emoji": Value::Null, "theme": Value::Null });
+        let mut body = json!({ "name": name, "instructions": instructions, "emoji": emoji, "theme": theme });
         // Only "global" or "project_v2" are accepted by the server.
         if let Some(ms) = memory_scope.filter(|m| *m == "global" || *m == "project_v2") {
             body["memory_scope"] = json!(ms);
