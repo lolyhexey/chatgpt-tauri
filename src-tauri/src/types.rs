@@ -136,6 +136,34 @@ pub struct Conversation {
     pub model: String,
 }
 
+/// A ChatGPT "project" — a gizmo of type snorlax (id `g-p-…`) that groups chats,
+/// holds custom instructions, and optionally knowledge files. Synced with chatgpt.com.
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+pub struct Project {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub instructions: String,
+    #[serde(default)]
+    pub memory_enabled: bool,
+    /// "global" (Default — shares memory with other chats) or "project_v2" (Project-only).
+    #[serde(default)]
+    pub memory_scope: String,
+    #[serde(default)]
+    pub can_write: bool,
+    #[serde(default)]
+    pub can_delete: bool,
+    /// last_interacted_at or updated_at as the server sent it; used for ordering.
+    pub updated: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+pub struct ProjectList {
+    pub items: Vec<Project>,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(tag = "type")]
 pub enum StreamEvent {

@@ -25,6 +25,8 @@ pub struct ChatGptClient {
     pub thinking_effort: Option<String>,
     /// Set to true (via the paired sender) to stop reading the reply; what arrived is kept.
     pub cancel: Option<tokio::sync::watch::Receiver<bool>>,
+    /// When set, a message starts or continues a chat inside this project (gizmo "g-p-…").
+    pub gizmo_id: Option<String>,
 }
 
 #[derive(Debug)]
@@ -53,6 +55,7 @@ impl ChatGptClient {
             system_hints: Vec::new(),
             thinking_effort: None,
             cancel: None,
+            gizmo_id: None,
         }
     }
 
@@ -112,6 +115,14 @@ impl ChatGptClient {
             self.model = m;
         }
         self.thinking_effort = effort.filter(|e| slug_ok(e));
+    }
+
+    /// The project (gizmo) a send belongs to, if any; ignores anything that isn't a plain id so
+    /// nothing odd reaches the request body.
+    pub fn set_gizmo(&mut self, gizmo_id: Option<String>) {
+        self.gizmo_id = gizmo_id.filter(|g| {
+            !g.is_empty() && g.len() <= 100 && g.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        });
     }
 
     fn headers(&self) -> reqwest::header::HeaderMap {
@@ -392,6 +403,13 @@ impl ChatGptClient {
 
         if let Some(conv_id) = &self.conversation_id {
             body["conversation_id"] = json!(conv_id);
+        }
+
+        // A message inside a project (gizmo "g-p-…"): chatgpt.com sends gizmo_interaction mode
+        // plus a top-level gizmo_id so the chat lands in that project.
+        if let Some(gid) = &self.gizmo_id {
+            body["conversation_mode"] = json!({ "kind": "gizmo_interaction", "gizmo_id": gid });
+            body["gizmo_id"] = json!(gid);
         }
 
         apply_system_hints(&mut body, &self.system_hints, self.reasoning_effort.as_deref());
@@ -847,6 +865,174 @@ impl ChatGptClient {
         }
         Ok(())
     }
+
+    // ---- Projects (gizmo "snorlax", id g-p-…) — verified live, see types::Project ----
+
+    /// The sidebar's Projects list (GET /backend-api/gizmos/snorlax/sidebar).
+    pub async fn list_projects(&self) -> Result<ProjectList, String> {
+        let url = format!("{BASE_URL}/backend-api/gizmos/snorlax/sidebar");
+        let resp = self.client.get(&url).headers(self.headers()).send().await
+            .map_err(|e| format!("List projects failed: {e}"))?;
+        if resp.status().as_u16() == 401 {
+            return Err("Authentication failed (401).".into());
+        }
+        if !resp.status().is_success() {
+            return Err(format!("List projects failed (HTTP {}).", resp.status()));
+        }
+        let data: Value = resp.json().await.map_err(|e| format!("Invalid response: {e}"))?;
+        let items = data["items"].as_array()
+            .map(|arr| arr.iter().map(|it| project_from_gizmo(giz_of(it))).collect())
+            .unwrap_or_default();
+        Ok(ProjectList { items })
+    }
+
+    /// Create a project (POST /backend-api/projects). Both fields are required by the server.
+    pub async fn create_project(&self, name: &str, instructions: &str) -> Result<Project, String> {
+        let url = format!("{BASE_URL}/backend-api/projects");
+        let resp = self.client.post(&url).headers(self.headers())
+            .json(&json!({ "name": name, "instructions": instructions }))
+            .send().await.map_err(|e| format!("Create project failed: {e}"))?;
+        if !resp.status().is_success() {
+            return Err(format!("Create project failed (HTTP {}).", resp.status()));
+        }
+        let data: Value = resp.json().await.map_err(|e| format!("Invalid response: {e}"))?;
+        Ok(project_from_gizmo(giz_of(&data)))
+    }
+
+    /// One project's detail (GET /backend-api/gizmos/{id}).
+    pub async fn get_project(&self, id: &str) -> Result<Project, String> {
+        let id = project_id_ok(id)?;
+        let url = format!("{BASE_URL}/backend-api/gizmos/{id}?include_file_limits=true");
+        let resp = self.client.get(&url).headers(self.headers()).send().await
+            .map_err(|e| format!("Get project failed: {e}"))?;
+        if !resp.status().is_success() {
+            return Err(format!("Get project failed (HTTP {}).", resp.status()));
+        }
+        let data: Value = resp.json().await.map_err(|e| format!("Invalid response: {e}"))?;
+        Ok(project_from_gizmo(giz_of(&data)))
+    }
+
+    /// Rename / edit a project (PATCH /backend-api/projects/{id}). The server requires the full
+    /// {name, instructions, emoji, theme} set; emoji/theme may be null.
+    pub async fn update_project(&self, id: &str, name: &str, instructions: &str, memory_scope: Option<&str>) -> Result<Project, String> {
+        let id = project_id_ok(id)?;
+        let url = format!("{BASE_URL}/backend-api/projects/{id}");
+        let mut body = json!({ "name": name, "instructions": instructions, "emoji": Value::Null, "theme": Value::Null });
+        // Only "global" or "project_v2" are accepted by the server.
+        if let Some(ms) = memory_scope.filter(|m| *m == "global" || *m == "project_v2") {
+            body["memory_scope"] = json!(ms);
+        }
+        let resp = self.client.patch(&url).headers(self.headers())
+            .json(&body)
+            .send().await.map_err(|e| format!("Update project failed: {e}"))?;
+        if !resp.status().is_success() {
+            return Err(format!("Update project failed (HTTP {}).", resp.status()));
+        }
+        let data: Value = resp.json().await.map_err(|e| format!("Invalid response: {e}"))?;
+        Ok(project_from_gizmo(giz_of(&data)))
+    }
+
+    /// Delete a project (DELETE /backend-api/gizmos/{id}).
+    pub async fn delete_project(&self, id: &str) -> Result<(), String> {
+        let id = project_id_ok(id)?;
+        let url = format!("{BASE_URL}/backend-api/gizmos/{id}");
+        let resp = self.client.delete(&url).headers(self.headers()).send().await
+            .map_err(|e| format!("Delete project failed: {e}"))?;
+        if !resp.status().is_success() {
+            return Err(format!("Delete project failed (HTTP {}).", resp.status()));
+        }
+        Ok(())
+    }
+
+    /// Chats inside a project (GET /backend-api/gizmos/{id}/conversations). Same item shape
+    /// as the normal conversation list.
+    pub async fn list_project_conversations(&self, id: &str, limit: u32) -> Result<Vec<ConversationSummary>, String> {
+        let id = project_id_ok(id)?;
+        let url = format!("{BASE_URL}/backend-api/gizmos/{id}/conversations?limit={limit}&owned_only=false");
+        let resp = self.client.get(&url).headers(self.headers()).send().await
+            .map_err(|e| format!("List project chats failed: {e}"))?;
+        if !resp.status().is_success() {
+            return Err(format!("List project chats failed (HTTP {}).", resp.status()));
+        }
+        let data: Value = resp.json().await.map_err(|e| format!("Invalid response: {e}"))?;
+        Ok(conversation_items(&data))
+    }
+
+    /// Move a chat into a project (gizmo_id = Some) or back to the chat list (gizmo_id = None):
+    /// PATCH /backend-api/conversation/{id} with the gizmo_id, as chatgpt.com does.
+    pub async fn move_chat_to_project(&self, conversation_id: &str, gizmo_id: Option<&str>) -> Result<(), String> {
+        if conversation_id.is_empty() || conversation_id.len() > 100
+            || !conversation_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+            return Err("Bad conversation id.".into());
+        }
+        let url = format!("{BASE_URL}/backend-api/conversation/{conversation_id}");
+        // chatgpt.com clears a chat's project with an empty string, not null.
+        let gid = match gizmo_id {
+            Some(g) => json!(project_id_ok(g)?),
+            None => json!(""),
+        };
+        let resp = self.client.patch(&url).headers(self.headers())
+            .json(&json!({ "gizmo_id": gid }))
+            .send().await.map_err(|e| format!("Move chat failed: {e}"))?;
+        if !resp.status().is_success() {
+            return Err(format!("Move chat failed (HTTP {}).", resp.status()));
+        }
+        Ok(())
+    }
+}
+
+/// A project's gizmo object is wrapped differently per endpoint: bare, under "gizmo", or under
+/// "resource.gizmo". Dig out the gizmo object itself.
+fn giz_of(v: &Value) -> &Value {
+    if v.get("gizmo").is_some() {
+        &v["gizmo"]
+    } else if v.get("resource").and_then(|r| r.get("gizmo")).is_some() {
+        &v["resource"]["gizmo"]
+    } else {
+        v
+    }
+}
+
+/// Build a Project from an (already unwrapped) gizmo object.
+fn project_from_gizmo(g: &Value) -> Project {
+    let perm = &g["current_user_permission"];
+    Project {
+        id: g["id"].as_str().unwrap_or("").to_string(),
+        name: g["display"]["name"].as_str().or_else(|| g["name"].as_str()).unwrap_or("").to_string(),
+        description: g["display"]["description"].as_str().unwrap_or("").to_string(),
+        instructions: g["instructions"].as_str().unwrap_or("").to_string(),
+        memory_enabled: g["memory_enabled"].as_bool().unwrap_or(false),
+        memory_scope: g["memory_scope"].as_str().unwrap_or("global").to_string(),
+        can_write: perm["can_write"].as_bool().unwrap_or(false),
+        can_delete: perm["can_delete"].as_bool().unwrap_or(false),
+        updated: time_key(&g["last_interacted_at"]).or_else(|| time_key(&g["updated_at"])),
+    }
+}
+
+/// Project ids look like `g-p-<hex>`; keep anything odd out of a URL path.
+fn project_id_ok(id: &str) -> Result<&str, String> {
+    if !id.is_empty() && id.len() <= 100 && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+        Ok(id)
+    } else {
+        Err("Bad project id.".into())
+    }
+}
+
+/// Parse a `{ items: [...] }` conversation list into summaries (shared by the normal list and a
+/// project's chat list).
+fn conversation_items(data: &Value) -> Vec<ConversationSummary> {
+    data["items"].as_array()
+        .map(|arr| {
+            arr.iter().map(|c| ConversationSummary {
+                id: c["id"].as_str().unwrap_or("").to_string(),
+                title: c["title"].as_str().unwrap_or("Untitled").to_string(),
+                model: c["default_model_slug"].as_str()
+                    .or_else(|| c["current_node_model_slug"].as_str())
+                    .unwrap_or("").to_string(),
+                updated: time_key(&c["update_time"]),
+            }).collect()
+        })
+        .unwrap_or_default()
 }
 
 pub fn mime_for(name: &str) -> String {
@@ -2392,5 +2578,197 @@ mod tests {
         let reply: String = events.iter().filter_map(|e| match e { StreamEvent::Text { delta, .. } => Some(delta.as_str()), _ => None }).collect();
         println!("reply: {reply}");
         assert!(reply.contains("PELICAN"));
+    }
+}
+
+#[cfg(test)]
+mod project_parse_tests {
+    use super::*;
+
+    // A gizmo as it arrives in a snorlax/sidebar item (trimmed to the fields we read).
+    const SIDEBAR_ITEM: &str = r#"{"gizmo":{"id":"g-p-abc","instructions":"be brief",
+        "display":{"name":"My Proj","description":"d","theme":null,"emoji":null},
+        "memory_enabled":true,"last_interacted_at":"2026-11-09T18:02:27.095240+00:00",
+        "updated_at":"2026-11-09T18:02:26+00:00",
+        "current_user_permission":{"can_delete":true,"can_write":false}}}"#;
+
+    #[test]
+    fn project_parses_from_a_sidebar_item() {
+        let v: Value = serde_json::from_str(SIDEBAR_ITEM).unwrap();
+        let p = project_from_gizmo(giz_of(&v));
+        assert_eq!(p.id, "g-p-abc");
+        assert_eq!(p.name, "My Proj");
+        assert_eq!(p.instructions, "be brief");
+        assert!(p.memory_enabled);
+        assert!(p.can_delete);
+        assert!(!p.can_write);
+        // prefers last_interacted_at over updated_at
+        assert_eq!(p.updated.as_deref(), Some("2026-11-09T18:02:27.095240+00:00"));
+    }
+
+    #[test]
+    fn create_response_unwraps_resource_gizmo() {
+        let v: Value = serde_json::from_str(r#"{"resource":{"gizmo":{"id":"g-p-xyz","display":{"name":"R"}}},"error":null}"#).unwrap();
+        let p = project_from_gizmo(giz_of(&v));
+        assert_eq!(p.id, "g-p-xyz");
+        assert_eq!(p.name, "R");
+    }
+
+    #[test]
+    fn falls_back_to_updated_at_when_never_interacted() {
+        let v: Value = serde_json::from_str(r#"{"gizmo":{"id":"g-p-1","display":{"name":"n"},"last_interacted_at":null,"updated_at":"2026-01-02T03:04:05+00:00"}}"#).unwrap();
+        let p = project_from_gizmo(giz_of(&v));
+        assert_eq!(p.updated.as_deref(), Some("2026-01-02T03:04:05+00:00"));
+    }
+
+    #[test]
+    fn project_id_rejects_path_tricks() {
+        assert!(project_id_ok("g-p-6af20ab2227c8191992f97b968ce9d34").is_ok());
+        assert!(project_id_ok("../etc/passwd").is_err());
+        assert!(project_id_ok("g-p-a/b").is_err());
+        assert!(project_id_ok("").is_err());
+    }
+}
+
+// Throwaway probe: exercises the ChatGPT Projects (gizmo "potion") API against the live account
+// and prints the real JSON shapes/bodies, so the typed client below can be written from ground
+// truth instead of guesswork. Creates and deletes one clearly-named test project. Ignored by
+// default; run with:
+//   cargo test --release -- --ignored probe_projects_api --nocapture
+#[cfg(test)]
+mod project_probe {
+    use super::*;
+
+    fn clip(s: &str, n: usize) -> String { s.chars().take(n).collect() }
+
+    #[tokio::test]
+    #[ignore = "hits the live ChatGPT API; creates and deletes a throwaway project"]
+    async fn probe_projects_api() {
+        let token = crate::auth::load_token().expect("need a token at ~/.chatgpt-cli/token");
+        let c = ChatGptClient::new(token);
+        let base = BASE_URL;
+        let show = |label: &str, status: reqwest::StatusCode, body: &str| {
+            println!("\n===== {label} [{status}] =====\n{}", clip(body, 4000));
+        };
+
+        // a project's gizmo object comes wrapped differently per endpoint: bare, under "gizmo",
+        // or under "resource.gizmo". Dig it out.
+        fn giz(v: &Value) -> &Value {
+            if v.get("gizmo").is_some() { &v["gizmo"] }
+            else if v.get("resource").and_then(|r| r.get("gizmo")).is_some() { &v["resource"]["gizmo"] }
+            else { v }
+        }
+        let pid = |v: &Value| giz(v)["id"].as_str().unwrap_or("").to_string();
+        let pname = |v: &Value| giz(v)["display"]["name"].as_str().unwrap_or("").to_string();
+
+        // 0. cleanup — delete any leftover zz-probe projects from earlier runs (also shows the
+        //    populated sidebar item shape we need to render).
+        let r = c.client.get(format!("{base}/backend-api/gizmos/snorlax/sidebar")).headers(c.headers()).send().await.expect("sidebar");
+        let (s, t) = (r.status(), r.text().await.unwrap_or_default());
+        show("GET gizmos/snorlax/sidebar (raw — item shape + cleanup scan)", s, &t);
+        let list: Value = serde_json::from_str(&t).unwrap_or(Value::Null);
+        if let Some(items) = list["items"].as_array() {
+            for it in items {
+                let (id, name) = (pid(it), pname(it));
+                if name.starts_with("zz-probe") && !id.is_empty() {
+                    let d = c.client.delete(format!("{base}/backend-api/gizmos/{id}")).headers(c.headers()).send().await;
+                    println!(">>> cleaned leftover {id} ({name}) -> {:?}", d.map(|x| x.status()));
+                }
+            }
+        }
+
+        // 1. create
+        let r = c.client.post(format!("{base}/backend-api/projects")).headers(c.headers())
+            .json(&json!({ "name": "zz-probe-delete", "instructions": "" })).send().await.expect("create");
+        let (s, t) = (r.status(), r.text().await.unwrap_or_default());
+        show("POST /projects (create, body={name,instructions})", s, &t);
+        let created: Value = serde_json::from_str(&t).unwrap_or(Value::Null);
+        let id = pid(&created);
+        println!("\n>>> parsed project id = {:?}", id);
+        assert!(!id.is_empty(), "could not parse created project id; see body above");
+
+        // 3. detail
+        let r = c.client.get(format!("{base}/backend-api/gizmos/{id}?include_file_limits=true")).headers(c.headers()).send().await.expect("detail");
+        let (s, t) = (r.status(), r.text().await.unwrap_or_default());
+        show("GET gizmos/{id} (detail)", s, &t);
+
+        // 4. project conversations (empty)
+        let r = c.client.get(format!("{base}/backend-api/gizmos/{id}/conversations?limit=50&owned_only=false")).headers(c.headers()).send().await.expect("convs");
+        let (s, t) = (r.status(), r.text().await.unwrap_or_default());
+        show("GET gizmos/{id}/conversations", s, &t);
+
+        // 5. rename / update
+        let r = c.client.patch(format!("{base}/backend-api/projects/{id}")).headers(c.headers())
+            .json(&json!({ "name": "zz-probe-renamed" })).send().await.expect("patch");
+        let (s, t) = (r.status(), r.text().await.unwrap_or_default());
+        show("PATCH /projects/{id} (rename, body={name})", s, &t);
+
+        // 6. sidebar list (populated, after) — reveals the per-project shape we must render
+        let r = c.client.get(format!("{base}/backend-api/gizmos/snorlax/sidebar")).headers(c.headers()).send().await.expect("sidebar2");
+        let (s, t) = (r.status(), r.text().await.unwrap_or_default());
+        show("GET gizmos/snorlax/sidebar (after, populated)", s, &t);
+
+        // 7. delete (cleanup)
+        let r = c.client.delete(format!("{base}/backend-api/gizmos/{id}")).headers(c.headers()).send().await.expect("delete");
+        let (s, t) = (r.status(), r.text().await.unwrap_or_default());
+        show("DELETE gizmos/{id} (cleanup)", s, &t);
+        assert!(s.is_success(), "cleanup delete failed — project {id} may still exist");
+    }
+
+    // Confirm the request bodies for memory_scope (6b) and project file register (8), using the
+    // live account. Creates and deletes a throwaway project + knowledge file. No message is sent.
+    #[tokio::test]
+    #[ignore = "hits the live ChatGPT API; creates and deletes a throwaway project + file"]
+    async fn probe_memory_and_files() {
+        let token = crate::auth::load_token().expect("need a token at ~/.chatgpt-cli/token");
+        let c = ChatGptClient::new(token);
+        let base = BASE_URL;
+        let show = |label: &str, status: reqwest::StatusCode, body: &str| {
+            println!("\n===== {label} [{status}] =====\n{}", clip(body, 1200));
+        };
+
+        let r = c.client.post(format!("{base}/backend-api/projects")).headers(c.headers())
+            .json(&json!({ "name": "zz-extras", "instructions": "" })).send().await.expect("create");
+        let created: Value = r.json().await.unwrap_or(Value::Null);
+        let id = created["resource"]["gizmo"]["id"].as_str().unwrap_or("").to_string();
+        println!(">>> project {id}");
+        assert!(!id.is_empty());
+
+        // 6b: which memory_scope value does "Project-only" send?
+        for scope in ["project_v2", "project-only"] {
+            let r = c.client.patch(format!("{base}/backend-api/projects/{id}")).headers(c.headers())
+                .json(&json!({ "name": "zz-extras", "instructions": "", "emoji": Value::Null, "theme": Value::Null, "memory_scope": scope }))
+                .send().await.expect("patch");
+            let (s, t) = (r.status(), r.text().await.unwrap_or_default());
+            show(&format!("PATCH memory_scope={scope}"), s, &t);
+            if s.is_success() {
+                let g = c.client.get(format!("{base}/backend-api/gizmos/{id}?include_file_limits=true")).headers(c.headers()).send().await.unwrap();
+                let gv: Value = g.json().await.unwrap_or(Value::Null);
+                println!(">>> reflected memory_scope = {:?}", gv["gizmo"]["memory_scope"]);
+            }
+        }
+
+        // 8: upload a knowledge file, register it with the project, list, (project delete removes it)
+        let file = c.upload_file("zz-knowledge.txt", b"project knowledge test file\n".to_vec()).await.expect("upload");
+        println!(">>> uploaded file_id = {}", file.id);
+        let candidates = [
+            ("loc=fs", json!({ "files": [{ "file_id": file.id, "name": file.name, "location": "fs" }] })),
+            ("loc=sediment", json!({ "files": [{ "file_id": file.id, "name": file.name, "location": "sediment" }] })),
+        ];
+        for (label, body) in candidates {
+            let r = c.client.post(format!("{base}/backend-api/projects/{id}/files")).headers(c.headers())
+                .json(&body).send().await.expect("register");
+            let (s, t) = (r.status(), r.text().await.unwrap_or_default());
+            show(&format!("POST files body={label}"), s, &t);
+            if s.is_success() {
+                let g = c.client.get(format!("{base}/backend-api/gizmos/{id}?include_file_limits=true")).headers(c.headers()).send().await.unwrap();
+                let gv: Value = g.json().await.unwrap_or(Value::Null);
+                println!(">>> project detail files[] after register = {}", gv["files"]);
+                break;
+            }
+        }
+
+        let r = c.client.delete(format!("{base}/backend-api/gizmos/{id}")).headers(c.headers()).send().await.expect("del");
+        println!(">>> delete project -> {}", r.status());
     }
 }

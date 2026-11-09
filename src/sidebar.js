@@ -1,8 +1,9 @@
 class Sidebar {
-  constructor(container, { onSelect, onDelete }) {
+  constructor(container, { onSelect, onDelete, onMoveToProject }) {
     this.container = container;
     this.onSelect = onSelect;
     this.onDelete = onDelete;
+    this.onMoveToProject = onMoveToProject;
     this.activeId = null;
     this.items = [];
     this.filter = '';
@@ -77,6 +78,19 @@ class Sidebar {
         spin.className = 'sb-chat-busy';
         spin.title = 'Working…';
         row.appendChild(spin);
+      }
+
+      if (this.onMoveToProject) {
+        const mv = document.createElement('button');
+        mv.type = 'button';
+        mv.className = 'sb-chat-move';
+        mv.title = 'Move to project';
+        mv.innerHTML = icon('folder', 16);
+        mv.addEventListener('click', (e) => {
+          e.stopPropagation();
+          this.onMoveToProject(item.id, mv);
+        });
+        row.appendChild(mv);
       }
 
       const del = document.createElement('button');

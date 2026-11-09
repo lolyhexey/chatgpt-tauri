@@ -61,6 +61,7 @@ function showView(next) {
   currentConversationId = next.convId;
   chat._updateEmpty();
   updateSendState();
+  exitProjectView();
 }
 
 // A run finished: if its view isn't shown, drop it (the chat reloads from the server next time).
@@ -86,7 +87,251 @@ const attachments = new Attachments($('att-tray'), (message) => {
 const sidebar = new Sidebar($('chat-list'), {
   onSelect: openConversation,
   onDelete: deleteConversation,
+  onMoveToProject: moveToProjectPicker,
 });
+
+const projects = new Projects($('project-list'), { onSelect: openProject });
+let projectsCollapsed = false;
+const projectOverlay = $('project-overlay');
+const projectNameInput = $('project-name-input');
+const projectError = $('project-error');
+const pvTitle = $('pv-title');
+const pvChats = $('pv-chats');
+let currentProjectId = null;
+let currentProjectName = '';
+const psOverlay = $('project-settings-overlay');
+const psName = $('ps-name');
+const psInstructions = $('ps-instructions');
+const psError = $('ps-error');
+const psMemory = $('ps-memory');
+const pdOverlay = $('project-delete-overlay');
+let psEditId = null;
+
+$('projects-toggle').addEventListener('click', () => {
+  projectsCollapsed = !projectsCollapsed;
+  appEl.classList.toggle('projects-collapsed', projectsCollapsed);
+  projects.setCollapsed(projectsCollapsed);
+});
+$('project-add-btn').addEventListener('click', openCreateProject);
+$('project-cancel-btn').addEventListener('click', closeCreateProject);
+$('project-create-btn').addEventListener('click', submitCreateProject);
+projectNameInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') { e.preventDefault(); submitCreateProject(); }
+  else if (e.key === 'Escape') closeCreateProject();
+});
+projectOverlay.addEventListener('click', (e) => { if (e.target === projectOverlay) closeCreateProject(); });
+
+$('pv-settings-btn').addEventListener('click', () => openProjectSettings(currentProjectId));
+$('ps-cancel-btn').addEventListener('click', closeProjectSettings);
+$('ps-save-btn').addEventListener('click', saveProjectSettings);
+$('ps-delete-btn').addEventListener('click', openDeleteConfirm);
+$('pd-cancel-btn').addEventListener('click', closeDeleteConfirm);
+$('pd-confirm-btn').addEventListener('click', confirmDeleteProject);
+psName.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') { e.preventDefault(); saveProjectSettings(); }
+  else if (e.key === 'Escape') closeProjectSettings();
+});
+psOverlay.addEventListener('click', (e) => { if (e.target === psOverlay) closeProjectSettings(); });
+pdOverlay.addEventListener('click', (e) => { if (e.target === pdOverlay) closeDeleteConfirm(); });
+
+// Leave the project landing (if any) and return to the normal chat area.
+function exitProjectView() {
+  if (!mainEl.classList.contains('project-open')) return;
+  mainEl.classList.remove('project-open');
+  currentProjectId = null;
+  projects.setActive(null);
+  chatInput.placeholder = 'Ask ChatGPT';
+}
+
+// Show a project's landing view (header + its chats), like chatgpt.com.
+async function openProject(id, name) {
+  currentProjectId = id;
+  currentProjectName = name || projects.nameOf(id) || 'Project';
+  projects.setActive(id);
+  mainEl.classList.add('project-open');
+  setTitle(currentProjectName);
+  pvTitle.textContent = currentProjectName;
+  chatInput.placeholder = `New chat in ${currentProjectName}`;
+  pvChats.innerHTML = '';
+  const loading = document.createElement('div');
+  loading.className = 'sb-note';
+  loading.textContent = 'Loading…';
+  pvChats.appendChild(loading);
+  try {
+    const chats = await invoke('list_project_conversations_cmd', { id });
+    if (currentProjectId === id) renderProjectChats(chats);
+  } catch (e) {
+    pvChats.innerHTML = '';
+    const err = document.createElement('div');
+    err.className = 'sb-note';
+    err.textContent = 'Could not load chats';
+    pvChats.appendChild(err);
+    handleAuthError(e);
+  }
+}
+
+function renderProjectChats(chats) {
+  pvChats.innerHTML = '';
+  if (!chats || chats.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'pv-empty';
+    const t = document.createElement('div');
+    t.className = 'pv-empty-title';
+    t.textContent = 'No chats yet';
+    const s = document.createElement('div');
+    s.className = 'pv-empty-sub';
+    s.textContent = `Chats in ${currentProjectName} will live here`;
+    empty.appendChild(t);
+    empty.appendChild(s);
+    pvChats.appendChild(empty);
+    return;
+  }
+  for (const c of chats) {
+    const row = document.createElement('div');
+    row.className = 'pv-chat';
+    row.title = c.title || 'Untitled';
+    const title = document.createElement('span');
+    title.className = 'pv-chat-title';
+    title.textContent = c.title || 'Untitled';
+    row.appendChild(title);
+    const rm = document.createElement('button');
+    rm.type = 'button';
+    rm.className = 'pv-chat-remove';
+    rm.title = 'Remove from project';
+    rm.innerHTML = icon('x', 16);
+    rm.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      try {
+        await invoke('move_chat_cmd', { id: c.id, gizmoId: null });
+        if (currentProjectId) openProject(currentProjectId, currentProjectName);
+        sidebar.refresh();
+      } catch (err) { setStatus('Could not remove chat'); handleAuthError(err); }
+    });
+    row.appendChild(rm);
+    row.addEventListener('click', () => openConversation(c.id));
+    pvChats.appendChild(row);
+  }
+}
+
+function openCreateProject() {
+  projectNameInput.value = '';
+  projectError.textContent = '';
+  projectOverlay.hidden = false;
+  projectNameInput.focus();
+}
+function closeCreateProject() {
+  projectOverlay.hidden = true;
+}
+async function submitCreateProject() {
+  const name = projectNameInput.value.trim();
+  if (!name) { projectError.textContent = 'Enter a project name.'; return; }
+  try {
+    const p = await invoke('create_project_cmd', { name, instructions: '' });
+    closeCreateProject();
+    await projects.refresh();
+    if (p && p.id) openProject(p.id);
+  } catch (e) {
+    projectError.textContent = String(e);
+    handleAuthError(e);
+  }
+}
+
+async function openProjectSettings(id) {
+  if (!id) return;
+  psEditId = id;
+  psError.textContent = '';
+  psName.value = projects.nameOf(id) || '';
+  psInstructions.value = '';
+  psMemory.value = 'global';
+  psOverlay.hidden = false;
+  psName.focus();
+  try {
+    const p = await invoke('get_project_cmd', { id });
+    if (psEditId === id) {
+      psName.value = p.name || '';
+      psInstructions.value = p.instructions || '';
+      psMemory.value = p.memory_scope === 'project_v2' ? 'project_v2' : 'global';
+    }
+  } catch (e) { handleAuthError(e); }
+}
+function closeProjectSettings() { psOverlay.hidden = true; }
+
+async function saveProjectSettings() {
+  const id = psEditId;
+  const name = psName.value.trim();
+  if (!name) { psError.textContent = 'Enter a project name.'; return; }
+  try {
+    const p = await invoke('update_project_cmd', { id, name, instructions: psInstructions.value, memoryScope: psMemory.value });
+    closeProjectSettings();
+    await projects.refresh();
+    if (currentProjectId === id) {
+      currentProjectName = p.name || name;
+      projects.setActive(id);
+      pvTitle.textContent = currentProjectName;
+      setTitle(currentProjectName);
+      chatInput.placeholder = `New chat in ${currentProjectName}`;
+    }
+  } catch (e) { psError.textContent = String(e); handleAuthError(e); }
+}
+
+function openDeleteConfirm() { pdOverlay.hidden = false; }
+function closeDeleteConfirm() { pdOverlay.hidden = true; }
+async function confirmDeleteProject() {
+  const id = psEditId;
+  try {
+    await invoke('delete_project_cmd', { id });
+    closeDeleteConfirm();
+    closeProjectSettings();
+    await projects.refresh();
+    if (currentProjectId === id) startNewChat(); // leaves the project view
+  } catch (e) {
+    closeDeleteConfirm();
+    psError.textContent = String(e);
+    handleAuthError(e);
+  }
+}
+
+function closeProjectPicker() {
+  const m = document.getElementById('project-picker');
+  if (m) m.remove();
+}
+// A small popover listing projects, to move a chat into one (from the chat's folder button).
+function moveToProjectPicker(chatId, anchor) {
+  closeProjectPicker();
+  if (!projects.items.length) { setStatus('Create a project first to move chats into it'); return; }
+  const menu = document.createElement('div');
+  menu.id = 'project-picker';
+  menu.className = 'project-picker';
+  for (const p of projects.items) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'project-picker-item';
+    b.innerHTML = icon('folder', 16);
+    const span = document.createElement('span');
+    span.textContent = p.name;
+    b.appendChild(span);
+    b.addEventListener('click', async () => {
+      closeProjectPicker();
+      try {
+        await invoke('move_chat_cmd', { id: chatId, gizmoId: p.id });
+        await projects.refresh();
+        await sidebar.refresh();
+        if (currentProjectId === p.id) openProject(p.id, p.name);
+      } catch (e) { setStatus('Could not move chat'); handleAuthError(e); }
+    });
+    menu.appendChild(b);
+  }
+  document.body.appendChild(menu);
+  const r = anchor.getBoundingClientRect();
+  menu.style.top = (r.bottom + 4) + 'px';
+  menu.style.left = Math.min(r.left, window.innerWidth - menu.offsetWidth - 8) + 'px';
+  setTimeout(() => {
+    const onDoc = (e) => {
+      if (!menu.contains(e.target)) { closeProjectPicker(); document.removeEventListener('click', onDoc, true); }
+    };
+    document.addEventListener('click', onDoc, true);
+  }, 0);
+}
 
 function setTitle(title) {
   titleEl.textContent = title || 'ChatGPT';
@@ -363,7 +608,13 @@ async function deleteConversation(id) {
 }
 
 function startNewChat() {
-  if (!view.running && !view.convId && view.el.childElementCount === 0) { chatInput.focus(); return; }
+  const wasProject = mainEl.classList.contains('project-open');
+  exitProjectView();
+  if (!view.running && !view.convId && view.el.childElementCount === 0) {
+    if (wasProject) { setTitle(null); setStatus(sending ? 'Thinking…' : 'Ready'); }
+    chatInput.focus();
+    return;
+  }
   showView(makeView(null));
   chat.clear();
   sidebar.setActive(null);
@@ -408,6 +659,14 @@ async function sendText(text, files = [], display = [], systemHints = []) {
   if ((!text && !files.length) || sending) return;
   if (goalMode && text) return startGoal(text);
 
+  // Sending from a project landing starts a new chat inside that project (carries gizmo_id).
+  if (mainEl.classList.contains('project-open')) {
+    const gid = currentProjectId;
+    const nv = makeView(null);
+    nv.gizmoId = gid;
+    showView(nv);
+  }
+
   // Everything below uses this send's own view, so switching chats mid-reply is safe.
   const v = view;
   const vchat = v.chat;
@@ -423,7 +682,7 @@ async function sendText(text, files = [], display = [], systemHints = []) {
   try {
     unlisten = await window.__TAURI__.event.listen('chat-delta', liveHandler(v, streamId, (fn) => fn()));
     const response = await invoke('send_message', Object.assign(
-      { text, attachments: files, streamId, systemHints, conversationId: v.convId, parentMessageId: v.parentId },
+      { text, attachments: files, streamId, systemHints, conversationId: v.convId, parentMessageId: v.parentId, gizmoId: v.gizmoId },
       picker.request()));
     // full_text is joined per message in Rust (or is the server's stored copy).
     if (response.stored) vchat.useStored(response.stored);
@@ -804,6 +1063,7 @@ $('token-save-btn').addEventListener('click', async () => {
     tokenInput.value = '';
     loginError.textContent = '';
     await sidebar.refresh();
+    projects.refresh();
   } catch (e) {
     loginError.textContent = String(e);
   }
@@ -818,6 +1078,7 @@ async function init() {
   else {
     loadComposerMenus();
     await sidebar.refresh();
+    projects.refresh();
   }
   chatInput.focus();
 }

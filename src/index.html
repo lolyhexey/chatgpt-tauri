@@ -24,6 +24,54 @@
       </div>
     </div>
 
+    <div id="project-overlay" class="overlay" hidden>
+      <div class="overlay-card">
+        <h2>Create project</h2>
+        <p>Projects keep chats, files, and custom instructions in one place.</p>
+        <label class="field-label" for="project-name-input">Project name</label>
+        <input id="project-name-input" type="text" placeholder="e.g. Copenhagen Trip" spellcheck="false" maxlength="120">
+        <div id="project-error" class="login-error"></div>
+        <div class="overlay-actions">
+          <button type="button" class="btn-secondary" id="project-cancel-btn">Cancel</button>
+          <button type="button" id="project-create-btn">Create project</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="project-settings-overlay" class="overlay" hidden>
+      <div class="overlay-card">
+        <h2>Project settings</h2>
+        <label class="field-label" for="ps-name">Project name</label>
+        <input id="ps-name" type="text" maxlength="120" spellcheck="false">
+        <label class="field-label" for="ps-instructions">Instructions</label>
+        <textarea id="ps-instructions" rows="4" placeholder="Set context and customize how ChatGPT responds in this project." spellcheck="false"></textarea>
+        <label class="field-label" for="ps-memory">Memory</label>
+        <select id="ps-memory" class="ps-select">
+          <option value="global">Default</option>
+          <option value="project_v2">Project-only</option>
+        </select>
+        <div id="ps-error" class="login-error"></div>
+        <div class="overlay-actions spread">
+          <button type="button" class="btn-danger" id="ps-delete-btn">Delete project</button>
+          <span class="overlay-spacer"></span>
+          <button type="button" class="btn-secondary" id="ps-cancel-btn">Cancel</button>
+          <button type="button" id="ps-save-btn">Save</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="project-delete-overlay" class="overlay" hidden>
+      <div class="overlay-card">
+        <h2>Delete project?</h2>
+        <p>This permanently deletes the project and all of its chats. This can’t be undone.</p>
+        <div class="overlay-actions spread">
+          <span class="overlay-spacer"></span>
+          <button type="button" class="btn-secondary" id="pd-cancel-btn">Cancel</button>
+          <button type="button" class="btn-danger" id="pd-confirm-btn">Delete</button>
+        </div>
+      </div>
+    </div>
+
     <aside class="sidebar">
       <div class="sb-top">
         <div class="sb-brand">ChatGPT</div>
@@ -41,6 +89,18 @@
       <div class="sb-search" id="sb-search" hidden>
         <input id="sb-search-input" type="text" placeholder="Search chats" spellcheck="false">
       </div>
+
+      <div class="sb-head" id="projects-head">
+        <button type="button" class="sb-head-title" id="projects-toggle" title="Collapse projects">
+          <span>Projects</span>
+          <span class="sb-chevron" data-icon="chevron-down" data-size="14"></span>
+        </button>
+        <div class="sb-head-actions">
+          <button type="button" class="icon-btn sb-mini" id="projects-more-btn" title="Projects"><span data-icon="ellipsis" data-size="16"></span></button>
+          <button type="button" class="icon-btn sb-mini" id="project-add-btn" title="New project"><span data-icon="plus" data-size="16"></span></button>
+        </div>
+      </div>
+      <div id="project-list" class="project-list"></div>
 
       <div class="sb-section">Recents</div>
       <div id="chat-list" class="chat-list"></div>
@@ -68,6 +128,18 @@
         </div>
 
         <h1 class="hero">What can I help with?</h1>
+
+        <div id="project-view" class="project-view">
+          <div class="pv-head">
+            <span class="pv-icon" data-icon="folder" data-size="24"></span>
+            <h1 class="pv-title" id="pv-title"></h1>
+            <button type="button" class="icon-btn pv-settings" id="pv-settings-btn" title="Project settings"><span data-icon="ellipsis" data-size="20"></span></button>
+          </div>
+          <div class="pv-tabs">
+            <button type="button" class="pv-tab active" id="pv-tab-chats">Chats</button>
+          </div>
+          <div id="pv-chats" class="pv-chats"></div>
+        </div>
 
         <div class="composer-wrap">
           <div class="composer-inner">
@@ -126,6 +198,7 @@
   <script src="chat.js"></script>
   <script src="viewer.js"></script>
   <script src="sidebar.js"></script>
+  <script src="projects.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

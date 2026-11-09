@@ -152,11 +152,13 @@ async fn send_message(
     thinking_effort: Option<String>,
     conversation_id: Option<String>,
     parent_message_id: Option<String>,
+    gizmo_id: Option<String>,
     state: tauri::State<'_, AppState>,
     app: tauri::AppHandle,
 ) -> Result<ChatResponse, String> {
     let mut client = make_client(&state)?;
     client.set_thread(conversation_id, parent_message_id);
+    client.set_gizmo(gizmo_id);
     client.system_hints = system_hints.unwrap_or_default();
     client.set_model_choice(model, thinking_effort);
     client.cancel = stream_id.as_deref().map(|id| register_stop(&state, id));
@@ -437,6 +439,51 @@ async fn delete_conversation_cmd(
 async fn delete_all_cmd(state: tauri::State<'_, AppState>) -> Result<(), String> {
     let client = make_client(&state)?;
     client.delete_all_conversations().await
+}
+
+// ---- Projects ----
+
+#[tauri::command]
+async fn list_projects_cmd(state: tauri::State<'_, AppState>) -> Result<ProjectList, String> {
+    make_client(&state)?.list_projects().await
+}
+
+#[tauri::command]
+async fn create_project_cmd(name: String, instructions: String, state: tauri::State<'_, AppState>) -> Result<Project, String> {
+    let name = name.trim();
+    if name.is_empty() || name.chars().count() > 120 {
+        return Err("Project name must be 1–120 characters.".into());
+    }
+    make_client(&state)?.create_project(name, &instructions).await
+}
+
+#[tauri::command]
+async fn get_project_cmd(id: String, state: tauri::State<'_, AppState>) -> Result<Project, String> {
+    make_client(&state)?.get_project(&id).await
+}
+
+#[tauri::command]
+async fn update_project_cmd(id: String, name: String, instructions: String, memory_scope: Option<String>, state: tauri::State<'_, AppState>) -> Result<Project, String> {
+    let name = name.trim();
+    if name.is_empty() || name.chars().count() > 120 {
+        return Err("Project name must be 1–120 characters.".into());
+    }
+    make_client(&state)?.update_project(&id, name, &instructions, memory_scope.as_deref()).await
+}
+
+#[tauri::command]
+async fn delete_project_cmd(id: String, state: tauri::State<'_, AppState>) -> Result<(), String> {
+    make_client(&state)?.delete_project(&id).await
+}
+
+#[tauri::command]
+async fn list_project_conversations_cmd(id: String, state: tauri::State<'_, AppState>) -> Result<Vec<ConversationSummary>, String> {
+    make_client(&state)?.list_project_conversations(&id, 50).await
+}
+
+#[tauri::command]
+async fn move_chat_cmd(id: String, gizmo_id: Option<String>, state: tauri::State<'_, AppState>) -> Result<(), String> {
+    make_client(&state)?.move_chat_to_project(&id, gizmo_id.as_deref()).await
 }
 
 #[tauri::command]
@@ -774,6 +821,13 @@ pub fn run() {
             stream_status_cmd,
             delete_conversation_cmd,
             delete_all_cmd,
+            list_projects_cmd,
+            create_project_cmd,
+            get_project_cmd,
+            update_project_cmd,
+            delete_project_cmd,
+            list_project_conversations_cmd,
+            move_chat_cmd,
             new_conversation,
             set_conversation,
             start_goal,
