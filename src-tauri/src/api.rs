@@ -1057,10 +1057,11 @@ impl ChatGptClient {
         Ok(())
     }
 
-    /// Create a public share link for a chat (POST /share/create); returns the share URL.
+    /// Create a public share link for a chat (POST /share/v2/create); returns the share URL.
+    /// v2 is what chatgpt.com uses now — the old /share/create makes a link that won't load.
     pub async fn share_conversation(&self, id: &str) -> Result<String, String> {
         let conv = self.get_conversation(id).await?;
-        let url = format!("{BASE_URL}/backend-api/share/create");
+        let url = format!("{BASE_URL}/backend-api/share/v2/create");
         let resp = self.client.post(&url).headers(self.headers())
             .json(&json!({ "conversation_id": id, "current_node_id": conv.current_node, "is_anonymous": true }))
             .send().await.map_err(|e| format!("Share failed: {e}"))?;
