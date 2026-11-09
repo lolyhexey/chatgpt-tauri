@@ -501,6 +501,16 @@ async fn delete_project_cmd(id: String, state: tauri::State<'_, AppState>) -> Re
 }
 
 #[tauri::command]
+async fn share_project_cmd(id: String, state: tauri::State<'_, AppState>) -> Result<String, String> {
+    make_client(&state)?.share_project(&id).await
+}
+
+#[tauri::command]
+async fn unshare_project_cmd(id: String, state: tauri::State<'_, AppState>) -> Result<(), String> {
+    make_client(&state)?.unshare_project(&id).await
+}
+
+#[tauri::command]
 async fn list_project_conversations_cmd(id: String, state: tauri::State<'_, AppState>) -> Result<Vec<ConversationSummary>, String> {
     make_client(&state)?.list_project_conversations(&id, 50).await
 }
@@ -872,6 +882,8 @@ pub fn run() {
             get_project_cmd,
             update_project_cmd,
             delete_project_cmd,
+            share_project_cmd,
+            unshare_project_cmd,
             list_project_conversations_cmd,
             move_chat_cmd,
             rename_chat_cmd,

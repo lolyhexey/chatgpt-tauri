@@ -100,6 +100,10 @@ let renameId = null;
 const shareOverlay = $('share-overlay');
 const shareUrlInput = $('share-url');
 const shareError = $('share-error');
+const projectShareOverlay = $('project-share-overlay');
+const projectShareUrl = $('project-share-url');
+const projectShareError = $('project-share-error');
+let projectShareId = null;
 const archivedOverlay = $('archived-overlay');
 const archivedList = $('archived-list');
 const tempBtn = $('temp-chat-btn');
@@ -160,7 +164,11 @@ projectOverlay.addEventListener('click', (e) => { if (e.target === projectOverla
 $('pv-settings-btn').addEventListener('click', () => openProjectSettings(currentProjectId));
 $('pv-tab-chats').addEventListener('click', () => showProjectTab('chats'));
 $('pv-tab-sources').addEventListener('click', () => showProjectTab('sources'));
-$('pv-share-btn').addEventListener('click', () => setStatus('Project sharing isn’t available in the desktop app yet'));
+$('pv-share-btn').addEventListener('click', openProjectShare);
+$('project-share-copy-btn').addEventListener('click', copyProjectShare);
+$('project-share-stop-btn').addEventListener('click', stopProjectShare);
+$('project-share-close-btn').addEventListener('click', closeProjectShare);
+projectShareOverlay.addEventListener('click', (e) => { if (e.target === projectShareOverlay) closeProjectShare(); });
 $('ps-cancel-btn').addEventListener('click', closeProjectSettings);
 $('ps-save-btn').addEventListener('click', saveProjectSettings);
 $('ps-delete-btn').addEventListener('click', openDeleteConfirm);
@@ -544,6 +552,50 @@ async function copyShare() {
   } catch {
     shareUrlInput.focus();
     shareUrlInput.select();
+  }
+}
+
+// Project share dialog: makes the open project link-shareable ("anyone with the link")
+// and shows a copyable URL, with Stop sharing to revert to private.
+function closeProjectShare() { projectShareOverlay.hidden = true; }
+async function openProjectShare() {
+  if (!currentProjectId) return;
+  projectShareId = currentProjectId;
+  projectShareError.textContent = '';
+  projectShareUrl.value = 'Creating link…';
+  projectShareOverlay.hidden = false;
+  try {
+    const link = await invoke('share_project_cmd', { id: projectShareId });
+    if (projectShareOverlay.hidden) return; // dialog was closed meanwhile
+    projectShareUrl.value = link;
+    projectShareUrl.focus();
+    projectShareUrl.select();
+  } catch (e) {
+    projectShareUrl.value = '';
+    projectShareError.textContent = 'Could not create project link';
+    handleAuthError(e);
+  }
+}
+async function copyProjectShare() {
+  const url = projectShareUrl.value;
+  if (!url || !url.startsWith('http')) return;
+  try {
+    await navigator.clipboard.writeText(url);
+    setStatus('Link copied');
+  } catch {
+    projectShareUrl.focus();
+    projectShareUrl.select();
+  }
+}
+async function stopProjectShare() {
+  if (!projectShareId) return;
+  try {
+    await invoke('unshare_project_cmd', { id: projectShareId });
+    setStatus('Project link turned off');
+    closeProjectShare();
+  } catch (e) {
+    projectShareError.textContent = 'Could not stop sharing';
+    handleAuthError(e);
   }
 }
 

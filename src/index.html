@@ -112,6 +112,23 @@
       </div>
     </div>
 
+    <div id="project-share-overlay" class="overlay" hidden>
+      <div class="overlay-card">
+        <h2>Share project</h2>
+        <p>Anyone with this link can view this project and its chats.</p>
+        <div class="share-row">
+          <input id="project-share-url" type="text" readonly spellcheck="false">
+          <button type="button" id="project-share-copy-btn">Copy link</button>
+        </div>
+        <div id="project-share-error" class="login-error"></div>
+        <div class="overlay-actions spread">
+          <button type="button" class="btn-danger" id="project-share-stop-btn">Stop sharing</button>
+          <span class="overlay-spacer"></span>
+          <button type="button" class="btn-secondary" id="project-share-close-btn">Close</button>
+        </div>
+      </div>
+    </div>
+
     <aside class="sidebar">
       <div class="sb-top">
         <div class="sb-brand">ChatGPT</div>

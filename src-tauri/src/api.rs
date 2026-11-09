@@ -949,6 +949,50 @@ impl ChatGptClient {
         Ok(())
     }
 
+    /// Share a project by public link ("anyone with the link"): POST /gizmos/{id}/share
+    /// {recipient:"link"}. Returns the project's public URL (its page at short_url).
+    pub async fn share_project(&self, id: &str) -> Result<String, String> {
+        let id = project_id_ok(id)?;
+        let url = format!("{BASE_URL}/backend-api/gizmos/{id}/share");
+        let resp = self.client.post(&url).headers(self.headers())
+            .json(&json!({ "recipient": "link" }))
+            .send().await.map_err(|e| format!("Share project failed: {e}"))?;
+        if !resp.status().is_success() {
+            return Err(format!("Share project failed (HTTP {}).", resp.status()));
+        }
+        let short = self.project_short_url(id).await?;
+        Ok(format!("https://chatgpt.com/g/{short}/project"))
+    }
+
+    /// Stop sharing a project (back to private): POST /gizmos/{id}/share {recipient:"private"}.
+    pub async fn unshare_project(&self, id: &str) -> Result<(), String> {
+        let id = project_id_ok(id)?;
+        let url = format!("{BASE_URL}/backend-api/gizmos/{id}/share");
+        let resp = self.client.post(&url).headers(self.headers())
+            .json(&json!({ "recipient": "private" }))
+            .send().await.map_err(|e| format!("Unshare project failed: {e}"))?;
+        if !resp.status().is_success() {
+            return Err(format!("Unshare project failed (HTTP {}).", resp.status()));
+        }
+        Ok(())
+    }
+
+    /// The project's short_url slug, used to build its public page link.
+    async fn project_short_url(&self, id: &str) -> Result<String, String> {
+        let url = format!("{BASE_URL}/backend-api/gizmos/{id}?include_file_limits=true");
+        let resp = self.client.get(&url).headers(self.headers()).send().await
+            .map_err(|e| format!("Load project failed: {e}"))?;
+        if !resp.status().is_success() {
+            return Err(format!("Load project failed (HTTP {}).", resp.status()));
+        }
+        let data: Value = resp.json().await.map_err(|e| format!("Invalid response: {e}"))?;
+        let short = giz_of(&data)["short_url"].as_str().unwrap_or("");
+        if short.is_empty() {
+            return Err("No project link available.".into());
+        }
+        Ok(short.to_string())
+    }
+
     /// Chats inside a project (GET /backend-api/gizmos/{id}/conversations). Same item shape
     /// as the normal conversation list.
     pub async fn list_project_conversations(&self, id: &str, limit: u32) -> Result<Vec<ConversationSummary>, String> {
