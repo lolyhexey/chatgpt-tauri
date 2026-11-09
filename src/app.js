@@ -714,6 +714,31 @@ function renderSettingsGeneral(el) {
     prefSet('enterSends', enterSends ? 'true' : 'false');
   });
   row.appendChild(sel);
+
+  const row2 = settingRow(el, 'Available reasoning efforts', 'Choose which effort levels appear in the model controls');
+  const wrap = document.createElement('div');
+  wrap.className = 'effort-choices';
+  const labels = picker.allEffortLabels();
+  const enabled = new Set(picker.getEfforts());
+  labels.forEach((label, i) => {
+    const lab = document.createElement('label');
+    lab.className = 'effort-choice';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = enabled.has(i);
+    cb.addEventListener('change', () => {
+      const next = [];
+      wrap.querySelectorAll('input[type=checkbox]').forEach((c, idx) => { if (c.checked) next.push(idx); });
+      if (!next.length) { cb.checked = true; return; } // at least one effort must stay on
+      picker.setEfforts(next);
+    });
+    lab.appendChild(cb);
+    const span = document.createElement('span');
+    span.textContent = label;
+    lab.appendChild(span);
+    wrap.appendChild(lab);
+  });
+  row2.appendChild(wrap);
 }
 function renderSettingsData(el) {
   const row = settingRow(el, 'Delete all chats', 'Permanently delete all of your conversations. This can’t be undone.');

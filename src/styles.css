@@ -1574,6 +1574,9 @@ button { font: inherit; color: inherit; }
 .settings-row-desc { margin-top: 3px; font-size: 13px; line-height: 18px; color: var(--text-muted); }
 .settings-row .ps-select { width: auto; margin: 0; flex: 0 0 auto; }
 .overlay-card .settings-row .settings-danger { width: auto; height: 36px; margin: 0; padding: 0 16px; flex: 0 0 auto; }
+.effort-choices { display: flex; gap: 14px; flex: 0 0 auto; }
+.effort-choice { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; cursor: pointer; }
+.effort-choice input { cursor: pointer; accent-color: var(--text); }
 .login-error { min-height: 18px; margin-top: 8px; font-size: 13px; color: var(--error); }
 .hint { margin: 14px 0 0 !important; font-size: 12px !important; }
 .hint code { font-family: var(--mono); font-size: 11px; }
