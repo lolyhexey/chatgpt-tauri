@@ -153,12 +153,14 @@ async fn send_message(
     conversation_id: Option<String>,
     parent_message_id: Option<String>,
     gizmo_id: Option<String>,
+    temporary: Option<bool>,
     state: tauri::State<'_, AppState>,
     app: tauri::AppHandle,
 ) -> Result<ChatResponse, String> {
     let mut client = make_client(&state)?;
     client.set_thread(conversation_id, parent_message_id);
     client.set_gizmo(gizmo_id);
+    client.temp_chat = temporary.unwrap_or(false);
     client.system_hints = system_hints.unwrap_or_default();
     client.set_model_choice(model, thinking_effort);
     client.cancel = stream_id.as_deref().map(|id| register_stop(&state, id));

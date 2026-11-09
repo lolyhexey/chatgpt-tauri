@@ -26,6 +26,7 @@ const searchInput = $('sb-search-input');
 let currentConversationId = null;
 let sending = false;
 let goalMode = false;
+let temporaryMode = false;
 
 hydrateIcons();
 
@@ -43,7 +44,7 @@ function makeView(convId, el) {
   el = el || document.createElement('div');
   el.classList.add('thread');
   if (!el.parentNode) messagesEl.appendChild(el);
-  return { convId, parentId: null, el, chat: new Chat(el, messagesEl, mainEl), running: false };
+  return { convId, parentId: null, el, chat: new Chat(el, messagesEl, mainEl), running: false, temporary: temporaryMode };
 }
 
 let view = makeView(null, $('thread'));
@@ -101,6 +102,25 @@ const shareUrlInput = $('share-url');
 const shareError = $('share-error');
 const archivedOverlay = $('archived-overlay');
 const archivedList = $('archived-list');
+const tempBtn = $('temp-chat-btn');
+const heroEl = document.querySelector('.hero');
+const starterChips = $('starter-chips');
+// Hero greetings rotate on each new chat, like chatgpt.com.
+const GREETINGS = [
+  'What can I help with?',
+  'Where should we begin?',
+  'What’s on your mind today?',
+  'What’s on the agenda today?',
+  'Ready when you are.',
+];
+let heroGreeting = GREETINGS[0];
+// Starter prompts shown under the hero on an empty chat; a click pre-fills the composer.
+const STARTERS = [
+  { label: 'Help me write', prompt: 'Help me write ' },
+  { label: 'Make a plan', prompt: 'Help me make a plan to ' },
+  { label: 'Summarize text', prompt: 'Summarize this:\n' },
+  { label: 'Brainstorm', prompt: 'Brainstorm ideas for ' },
+];
 
 const projects = new Projects($('project-list'), { onSelect: openProject });
 let projectsCollapsed = false;
@@ -725,6 +745,8 @@ function autosize() {
 
 async function openConversation(id) {
   exitProjectView(); // leaving the project landing, even on the already-open fast path below
+  temporaryMode = false; // opening a saved chat always leaves temporary mode
+  if (tempBtn) tempBtn.classList.remove('active');
   sidebar.setActive(id);
   setTitle(sidebar.titleOf(id));
   // Still replying there: show its live view instead of reloading.
@@ -892,10 +914,46 @@ async function deleteConversation(id) {
   }
 }
 
-function startNewChat() {
+// Rotate the hero greeting / starter prompts shown on an empty chat.
+function pickGreeting() {
+  heroGreeting = GREETINGS[Math.floor(Math.random() * GREETINGS.length)];
+}
+function updateHero() {
+  if (heroEl) heroEl.textContent = temporaryMode ? 'Temporary Chat' : heroGreeting;
+  mainEl.classList.toggle('temporary', temporaryMode);
+}
+function renderStarters() {
+  if (!starterChips) return;
+  starterChips.innerHTML = '';
+  for (const s of STARTERS) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'starter-chip';
+    b.textContent = s.label;
+    b.addEventListener('click', () => {
+      chatInput.value = s.prompt;
+      chatInput.dispatchEvent(new Event('input'));
+      chatInput.focus();
+    });
+    starterChips.appendChild(b);
+  }
+}
+// Toggle "Temporary chat": a fresh chat whose turns aren't saved to history.
+function toggleTemporary() {
+  startNewChat({ temporary: !temporaryMode });
+  setStatus(temporaryMode ? 'Temporary chat won’t appear in history' : 'Ready');
+}
+
+function startNewChat(opts) {
+  const temp = !!(opts && opts.temporary);
+  temporaryMode = temp;
+  if (tempBtn) tempBtn.classList.toggle('active', temp);
+  pickGreeting();
   const wasProject = mainEl.classList.contains('project-open');
   exitProjectView();
   if (!view.running && !view.convId && view.el.childElementCount === 0) {
+    view.temporary = temp;
+    updateHero();
     if (wasProject) { setTitle(null); setStatus(sending ? 'Thinking…' : 'Ready'); }
     chatInput.focus();
     return;
@@ -904,6 +962,7 @@ function startNewChat() {
   chat.clear();
   sidebar.setActive(null);
   setTitle(null);
+  updateHero();
   setStatus(sending ? 'Thinking…' : 'Ready');
   chatInput.focus();
 }
@@ -969,7 +1028,7 @@ async function sendText(text, files = [], display = [], systemHints = []) {
   try {
     unlisten = await window.__TAURI__.event.listen('chat-delta', liveHandler(v, streamId, (fn) => fn()));
     const response = await invoke('send_message', Object.assign(
-      { text, attachments: files, streamId, systemHints, conversationId: v.convId, parentMessageId: v.parentId, gizmoId: v.gizmoId },
+      { text, attachments: files, streamId, systemHints, conversationId: v.convId, parentMessageId: v.parentId, gizmoId: v.gizmoId, temporary: v.temporary },
       picker.request()));
     // full_text is joined per message in Rust (or is the server's stored copy).
     if (response.stored) vchat.useStored(response.stored);
@@ -1326,6 +1385,9 @@ $('goal-nav-btn').addEventListener('click', () => { setGoalMode(true); chatInput
 
 $('new-chat-btn').addEventListener('click', startNewChat);
 $('topbar-new-btn').addEventListener('click', startNewChat);
+if (tempBtn) tempBtn.addEventListener('click', toggleTemporary);
+renderStarters();
+updateHero();
 $('collapse-btn').addEventListener('click', () => appEl.classList.add('sb-collapsed'));
 $('open-sidebar-btn').addEventListener('click', () => appEl.classList.remove('sb-collapsed'));
 
