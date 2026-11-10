@@ -1878,3 +1878,128 @@ button.viewer-pill:hover { background: rgba(255, 255, 255, 0.16); }
   vertical-align: middle;
   animation: pulse 1.1s ease-in-out infinite;
 }
+
+/* ============================================================
+   Interaction polish — feedback, micro-interactions, motion.
+   Added so every click shows what happened, and the UI feels
+   alive instead of snapping instantly between states.
+   ============================================================ */
+
+/* ---------- Toasts (transient action feedback) ---------- */
+.toast-stack {
+  position: fixed;
+  left: 50%;
+  bottom: 30px;
+  transform: translateX(-50%);
+  z-index: 300;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  max-width: calc(100vw - 32px);
+  pointer-events: none;
+}
+.toast {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  max-width: 440px;
+  padding: 11px 16px;
+  border-radius: 14px;
+  background: #2f2f2f;
+  color: #ededed;
+  font-size: 14px;
+  line-height: 20px;
+  text-align: left;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.5), inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+  pointer-events: auto;
+  cursor: default;
+  opacity: 0;
+  transform: translateY(12px) scale(0.96);
+  transition: opacity 0.24s ease, transform 0.24s cubic-bezier(0.2, 0.9, 0.2, 1);
+}
+.toast.show { opacity: 1; transform: none; }
+.toast.hide { opacity: 0; transform: translateY(6px) scale(0.98); }
+.toast-ico { display: inline-flex; flex: 0 0 auto; }
+.toast-msg { min-width: 0; }
+.toast-success .toast-ico { color: #4ade80; }
+.toast-error { background: #3b2222; }
+.toast-error .toast-ico { color: #f87171; }
+.toast-info .toast-ico { color: var(--link); }
+
+/* "Copied!" confirmation flashed on a copy button */
+.btn-flashed { background: #16a34a !important; color: #fff !important; }
+
+/* ---------- Smooth, tactile controls ---------- */
+/* Most interactive elements are <button>; add the few interactive non-buttons too. */
+button,
+.sb-chat, .sb-project, .pv-chat, .mention-item, .archived-row, .att, .cite-chip, .gx-dot {
+  transition: background-color 0.13s ease, color 0.13s ease, border-color 0.13s ease,
+              box-shadow 0.13s ease, opacity 0.13s ease, transform 0.09s ease;
+}
+
+/* Press feedback: compact controls dip clearly, large rows/pills dip subtly. */
+.icon-btn:active, .sb-mini:active, .act-btn:active, .code-btn:active, .mermaid-btn:active,
+.viewer-btn:active, button.viewer-pill:active, .model-btn:active, .pv-settings:active,
+.sb-chat-more:active, .sb-chat-pin:active, .mention-chip-x:active, .goal-chip-x:active,
+.att-remove:active, .pv-chat-remove:active, .archived-action:active, .cite-chip:active,
+.starter-chip:active, .send-btn:active:not(:disabled), .voice-mute:active,
+.pv-share-btn:active, .gx-button:active:not(:disabled) {
+  transform: scale(0.9);
+}
+.sb-item:active, .sb-chat:active, .sb-project:active, .pv-chat:active, .menu-item:active,
+.popover-item:active, .project-picker-item:active, .model-row:active, .mention-item:active,
+.sb-footer:active, .archived-row:active, .overlay-card button:active,
+.overlay-actions .btn-secondary:active, .pv-tab:active {
+  transform: scale(0.985);
+}
+
+/* Keyboard focus rings (mouse clicks don't trigger :focus-visible, so no click noise). */
+.icon-btn:focus-visible, .sb-item:focus-visible, .sb-chat:focus-visible, .sb-project:focus-visible,
+.send-btn:focus-visible, .act-btn:focus-visible, .code-btn:focus-visible, .menu-item:focus-visible,
+.popover-item:focus-visible, .project-picker-item:focus-visible, .starter-chip:focus-visible,
+.model-btn:focus-visible, .model-row:focus-visible, .pv-share-btn:focus-visible, .pv-tab:focus-visible,
+.sb-footer:focus-visible, .overlay-card button:focus-visible, .gx-button:focus-visible,
+.viewer-btn:focus-visible, button.viewer-pill:focus-visible, .archived-action:focus-visible,
+.sb-mini:focus-visible, .mermaid-btn:focus-visible, .sb-chat-more:focus-visible {
+  outline: 2px solid var(--link);
+  outline-offset: 2px;
+}
+
+/* A couple of prominent primary actions get a little lift (visible "aliveness"). */
+.send-btn:hover:not(:disabled) { transform: scale(1.06); }
+.starter-chip { transition: background-color 0.13s ease, border-color 0.13s ease, transform 0.12s ease; }
+.starter-chip:hover { border-color: var(--border-strong); transform: translateY(-1px); }
+
+/* Composer shows it's focused (border brightens, like chatgpt.com). */
+.composer { transition: box-shadow 0.15s ease; }
+.composer:focus-within {
+  box-shadow: inset 0 0 1px 0 rgba(255, 255, 255, 0.32), 0 0 0 1px rgba(255, 255, 255, 0.14);
+}
+
+/* ---------- Entrance animations ---------- */
+@keyframes menu-pop { from { opacity: 0; transform: scale(0.96) translateY(-4px); } to { opacity: 1; transform: none; } }
+@keyframes menu-pop-up { from { opacity: 0; transform: scale(0.96) translateY(4px); } to { opacity: 1; transform: none; } }
+@keyframes overlay-fade { from { opacity: 0; } to { opacity: 1; } }
+@keyframes card-rise { from { opacity: 0; transform: translateY(10px) scale(0.98); } to { opacity: 1; transform: none; } }
+
+/* Downward popovers (chat "…" menu, profile menu, move-to-project picker) */
+.popover-menu, .project-picker { animation: menu-pop 0.14s cubic-bezier(0.2, 0.9, 0.3, 1); transform-origin: top; }
+/* Upward menus (open above their anchor) */
+.plus-menu, .model-panel, .mention-menu { animation: menu-pop-up 0.14s cubic-bezier(0.2, 0.9, 0.3, 1); transform-origin: bottom; }
+
+/* Modals: backdrop fades, card rises in */
+.overlay { animation: overlay-fade 0.16s ease; }
+.overlay-card { animation: card-rise 0.2s cubic-bezier(0.2, 0.8, 0.2, 1); }
+.drop-overlay { animation: overlay-fade 0.14s ease; }
+
+/* ---------- Respect reduced motion ---------- */
+@media (prefers-reduced-motion: reduce) {
+  .toast { transition: opacity 0.12s linear; transform: none; }
+  .toast.show, .toast.hide { transform: none; }
+  .popover-menu, .project-picker, .plus-menu, .model-panel, .mention-menu,
+  .overlay, .overlay-card, .drop-overlay { animation: none; }
+  button:active, .sb-chat:active, .sb-project:active, .pv-chat:active, .mention-item:active,
+  .archived-row:active, .cite-chip:active, .send-btn:hover:not(:disabled),
+  .starter-chip:hover { transform: none; }
+}

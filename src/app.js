@@ -290,7 +290,8 @@ function renderProjectChats(chats) {
         await invoke('move_chat_cmd', { id: c.id, gizmoId: null });
         if (currentProjectId) openProject(currentProjectId, currentProjectName);
         sidebar.refresh();
-      } catch (err) { setStatus('Could not remove chat'); handleAuthError(err); }
+        notify('Removed from project', 'success');
+      } catch (err) { notify('Could not remove chat', 'error'); handleAuthError(err); }
     });
     row.appendChild(rm);
     row.addEventListener('click', () => openConversation(c.id));
@@ -314,6 +315,7 @@ async function submitCreateProject() {
     const p = await invoke('create_project_cmd', { name, instructions: '' });
     closeCreateProject();
     await projects.refresh();
+    notify('Project created', 'success');
     if (p && p.id) openProject(p.id);
   } catch (e) {
     projectError.textContent = String(e);
@@ -359,6 +361,7 @@ async function saveProjectSettings() {
       setTitle(currentProjectName);
       chatInput.placeholder = `New chat in ${currentProjectName}`;
     }
+    notify('Project saved', 'success');
   } catch (e) { psError.textContent = String(e); handleAuthError(e); }
 }
 
@@ -371,6 +374,7 @@ async function confirmDeleteProject() {
     closeDeleteConfirm();
     closeProjectSettings();
     await projects.refresh();
+    notify('Project deleted', 'success');
     if (currentProjectId === id) startNewChat(); // leaves the project view
   } catch (e) {
     closeDeleteConfirm();
@@ -386,7 +390,7 @@ function closeProjectPicker() {
 // A small popover listing projects, to move a chat into one (from the chat's folder button).
 function moveToProjectPicker(chatId, anchor) {
   closeProjectPicker();
-  if (!projects.items.length) { setStatus('Create a project first to move chats into it'); return; }
+  if (!projects.items.length) { notify('Create a project first to move chats into it', 'info'); return; }
   const menu = document.createElement('div');
   menu.id = 'project-picker';
   menu.className = 'project-picker';
@@ -405,7 +409,8 @@ function moveToProjectPicker(chatId, anchor) {
         await projects.refresh();
         await sidebar.refresh();
         if (currentProjectId === p.id) openProject(p.id, p.name);
-      } catch (e) { setStatus('Could not move chat'); handleAuthError(e); }
+        notify('Moved to ' + p.name, 'success');
+      } catch (e) { notify('Could not move chat', 'error'); handleAuthError(e); }
     });
     menu.appendChild(b);
   }
@@ -482,8 +487,8 @@ async function pinChat(chatId, pinned) {
   try {
     await invoke('pin_chat_cmd', { id: chatId, pinned });
     await sidebar.refresh();
-    setStatus(pinned ? 'Chat pinned' : 'Chat unpinned');
-  } catch (e) { setStatus('Could not pin chat'); handleAuthError(e); }
+    notify(pinned ? 'Chat pinned' : 'Chat unpinned', 'success');
+  } catch (e) { notify('Could not pin chat', 'error'); handleAuthError(e); }
 }
 
 async function archiveChat(chatId) {
@@ -492,8 +497,8 @@ async function archiveChat(chatId) {
     convCache.delete(chatId);
     if (chatId === currentConversationId) startNewChat();
     await sidebar.refresh();
-    setStatus('Chat archived');
-  } catch (e) { setStatus('Could not archive chat'); handleAuthError(e); }
+    notify('Chat archived', 'success');
+  } catch (e) { notify('Could not archive chat', 'error'); handleAuthError(e); }
 }
 
 // Rename dialog (shared #rename-overlay).
@@ -516,7 +521,7 @@ async function saveRename() {
     closeRename();
     if (id === currentConversationId) setTitle(title);
     await sidebar.refresh();
-    setStatus('Chat renamed');
+    notify('Chat renamed', 'success');
   } catch (e) { renameError.textContent = 'Could not rename chat'; handleAuthError(e); }
 }
 
@@ -548,7 +553,8 @@ async function copyShare() {
   if (!url || !url.startsWith('http')) return;
   try {
     await navigator.clipboard.writeText(url);
-    setStatus('Link copied');
+    flashButton(document.getElementById('share-copy-btn'), 'Copied!');
+    notify('Link copied', 'success');
   } catch {
     shareUrlInput.focus();
     shareUrlInput.select();
@@ -581,7 +587,8 @@ async function copyProjectShare() {
   if (!url || !url.startsWith('http')) return;
   try {
     await navigator.clipboard.writeText(url);
-    setStatus('Link copied');
+    flashButton(document.getElementById('project-share-copy-btn'), 'Copied!');
+    notify('Link copied', 'success');
   } catch {
     projectShareUrl.focus();
     projectShareUrl.select();
@@ -591,7 +598,7 @@ async function stopProjectShare() {
   if (!projectShareId) return;
   try {
     await invoke('unshare_project_cmd', { id: projectShareId });
-    setStatus('Project link turned off');
+    notify('Project link turned off', 'success');
     closeProjectShare();
   } catch (e) {
     projectShareError.textContent = 'Could not stop sharing';
@@ -674,8 +681,8 @@ function renderArchived(items) {
         row.remove();
         if (!archivedList.children.length) renderArchived([]);
         await sidebar.refresh();
-        setStatus('Chat unarchived');
-      } catch (e) { setStatus('Could not unarchive'); handleAuthError(e); }
+        notify('Chat unarchived', 'success');
+      } catch (e) { notify('Could not unarchive', 'error'); handleAuthError(e); }
     });
     row.appendChild(unarchive);
 
@@ -690,8 +697,8 @@ function renderArchived(items) {
         convCache.delete(it.id);
         row.remove();
         if (!archivedList.children.length) renderArchived([]);
-        setStatus('Chat deleted');
-      } catch (e) { setStatus('Could not delete'); handleAuthError(e); }
+        notify('Chat deleted', 'success');
+      } catch (e) { notify('Could not delete', 'error'); handleAuthError(e); }
     });
     row.appendChild(del);
 
@@ -706,6 +713,28 @@ function setTitle(title) {
 
 function setStatus(text) {
   statusEl.textContent = text;
+}
+
+// Transient, clearly-visible confirmation or error for a user action (pin, archive, copy, …),
+// as a toast pill — distinct from setStatus(), which holds the persistent footer state label.
+// type: 'success' | 'error' | 'info' (omit for a neutral pill).
+function notify(text, type) {
+  if (typeof toast === 'function') toast(text, type ? { type } : undefined);
+  else setStatus(text);
+}
+
+// Briefly swap a button's label to a confirmation (e.g. "Copied!"), then restore it.
+function flashButton(btn, text) {
+  if (!btn) return;
+  if (btn._flashTimer) clearTimeout(btn._flashTimer);
+  else btn.dataset.restoreLabel = btn.textContent;
+  btn.textContent = text;
+  btn.classList.add('btn-flashed');
+  btn._flashTimer = setTimeout(() => {
+    btn.textContent = btn.dataset.restoreLabel;
+    btn.classList.remove('btn-flashed');
+    btn._flashTimer = null;
+  }, 1400);
 }
 
 function handleAuthError(e) {
@@ -970,8 +999,9 @@ async function deleteConversation(id) {
     convCache.delete(id);
     if (id === currentConversationId) startNewChat();
     await sidebar.refresh();
+    notify('Chat deleted', 'success');
   } catch (e) {
-    setStatus('Delete failed');
+    notify('Delete failed', 'error');
     handleAuthError(e);
   }
 }
@@ -1188,15 +1218,15 @@ function stripGoalMarker(text) {
 function submitComposer() {
   let text = chatInput.value;
   // Typing during a call is allowed (as on the web) but sending isn't supported yet.
-  if (voiceActive) { setStatus('Sending text during a voice call isn’t supported yet'); return; }
+  if (voiceActive) { notify('Sending text during a voice call isn’t supported yet', 'info'); return; }
   if (sendBtn.disabled) return;
   // The chat is still being fetched: sending now would reply to the wrong message and the
   // loaded history would then replace the new turn.
-  if (view.el.querySelector('.thread-loading')) { setStatus('Wait for the chat to finish loading'); return; }
+  if (view.el.querySelector('.thread-loading')) { notify('Wait for the chat to finish loading', 'info'); return; }
   // Like the web: no new message while a reply is still being written on another device.
-  if (view.remote) { setStatus('Wait for the reply on the other device to finish, or stop it'); return; }
+  if (view.remote) { notify('Wait for the reply on the other device to finish, or stop it', 'info'); return; }
   if (attachments.hasErrors()) {
-    setStatus('Remove the files that failed to upload first');
+    notify('Remove the files that failed to upload first', 'info');
     return;
   }
   // Goal mode runs a text-only autonomous loop; leave any files in the tray.
