@@ -1095,7 +1095,7 @@ async function sendText(text, files = [], display = [], systemHints = []) {
   if ((!text && !files.length) || sending) return;
   // Goal mode isn't project-scoped yet, but it must still leave the project landing so its
   // reply is visible (not hidden behind the project view).
-  if (goalMode && text) { exitProjectView(); return startGoal(text); }
+  if (goalMode && text) { exitProjectView(); return startGoal(text, files, display); }
 
   // Sending from a project landing starts a new chat inside that project (carries gizmo_id).
   if (mainEl.classList.contains('project-open')) {
@@ -1138,14 +1138,14 @@ async function sendText(text, files = [], display = [], systemHints = []) {
   }
 }
 
-async function startGoal(task) {
+async function startGoal(task, files = [], display = []) {
   setGoalMode(false);
   const v = view;
   const vchat = v.chat;
   v.running = true;
   if (v.convId) sidebar.setBusy(v.convId, true);
   setSending(true);
-  vchat.addUserMessage(task);
+  vchat.addUserMessage(task, display);
   const notice = vchat.addNotice('Goal mode · round 1');
   vchat.startPending();
   const streamId = 'g' + Date.now().toString(36) + Math.random().toString(36).slice(2);
@@ -1176,7 +1176,7 @@ async function startGoal(task) {
       });
     }));
     const result = await invoke('start_goal', Object.assign(
-      { task, streamId, conversationId: v.convId, parentMessageId: v.parentId }, picker.request()));
+      { task, attachments: files, streamId, conversationId: v.convId, parentMessageId: v.parentId }, picker.request()));
     await queue;
     notice.textContent = goalOutcome(result);
     const last = result.responses[result.responses.length - 1];
@@ -1229,8 +1229,8 @@ function submitComposer() {
     notify('Remove the files that failed to upload first', 'info');
     return;
   }
-  // Goal mode runs a text-only autonomous loop; leave any files in the tray.
-  const { files, display } = goalMode ? { files: [], display: [] } : attachments.take();
+  // Files attach in both modes; goal mode carries them into its first round.
+  const { files, display } = attachments.take();
   // "@" picks go in front of the text the way chatgpt.com sends them (goal mode keeps them).
   const { prefix, hints } = goalMode ? { prefix: '', hints: [] } : mentions.take();
   if (prefix) text = prefix + ' ' + text.trim();

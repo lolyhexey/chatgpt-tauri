@@ -298,17 +298,19 @@ async fn start_goal(
     thinking_effort: Option<String>,
     conversation_id: Option<String>,
     parent_message_id: Option<String>,
+    attachments: Option<Vec<UploadedFile>>,
     state: tauri::State<'_, AppState>,
     app: tauri::AppHandle,
 ) -> Result<GoalResponse, String> {
     let mut client = make_client(&state)?;
     client.set_thread(conversation_id, parent_message_id);
     client.set_model_choice(model, thinking_effort);
+    let attachments = attachments.unwrap_or_default();
     let stop = stream_id.as_deref().map(|id| register_stop(&state, id));
     client.cancel = stop.clone();
     let mut responses = Vec::new();
     let mut verdict = None;
-    let result = goal_rounds(&task, &mut client, &mut responses, &mut verdict, stop.as_ref(), stream_id.as_deref(), &state, &app).await;
+    let result = goal_rounds(&task, &attachments, &mut client, &mut responses, &mut verdict, stop.as_ref(), stream_id.as_deref(), &state, &app).await;
     unregister_stop(&state, stream_id.as_deref());
     result?;
 
@@ -334,6 +336,7 @@ async fn start_goal(
 #[allow(clippy::too_many_arguments)]
 async fn goal_rounds(
     task: &str,
+    attachments: &[UploadedFile],
     client: &mut ChatGptClient,
     responses: &mut Vec<ChatResponse>,
     verdict: &mut Option<GoalVerdict>,
@@ -358,8 +361,11 @@ async fn goal_rounds(
         if let Some(id) = stream_id {
             let _ = app.emit("goal-round", GoalRound { stream_id: id, round: round + 1 });
         }
+        // Attachments ride the first round; later rounds resume the same thread, where the
+        // file is already available in context, so they send none.
+        let round_files: &[UploadedFile] = if round == 0 { attachments } else { &[] };
         let events = client
-            .send_message_streaming(&prompt, &[], |ev| emit_live(app, stream_id, ev))
+            .send_message_streaming(&prompt, round_files, |ev| emit_live(app, stream_id, ev))
             .await?;
         let full_text = reply_text(&events);
         // A round that used no tool, only text, is a stall; tool use resets the streak.
