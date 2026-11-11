@@ -236,7 +236,7 @@ impl ChatGptClient {
         let mime = mime_for(name);
         let dims = if is_supported_image(&mime) { imagesize::blob_size(&bytes).ok() } else { None };
         let is_image = dims.is_some();
-        let use_case = if is_image { "multimodal" } else { "my_files" };
+        let (use_case, index_for_retrieval) = upload_route(&mime, is_image);
         let size = bytes.len() as u64;
 
         let create = self
@@ -296,7 +296,7 @@ impl ChatGptClient {
                 "file_name": name,
                 "use_case": use_case,
                 "mime_type": mime,
-                "index_for_retrieval": !is_image,
+                "index_for_retrieval": index_for_retrieval,
                 "metadata": { "store_in_library": false },
             }))
             .send()
@@ -1175,6 +1175,42 @@ pub fn mime_for(name: &str) -> String {
 
 fn is_supported_image(mime: &str) -> bool {
     matches!(mime, "image/png" | "image/jpeg" | "image/gif" | "image/webp")
+}
+
+/// Pick the upload route the way chatgpt.com does, returning `(use_case, index_for_retrieval)`.
+/// Images are `multimodal`; text-extractable documents go to `my_files` and get retrieval
+/// indexing; everything else (opaque binaries like `.so`/`.bin`/`.zip`, which resolve to
+/// `application/octet-stream`) goes to `ace_upload` — the code-sandbox route — with no
+/// indexing. The client previously sent every non-image through `my_files` with
+/// `index_for_retrieval: true`, so ChatGPT tried to text-index binaries and rejected them.
+fn upload_route(mime: &str, is_image: bool) -> (&'static str, bool) {
+    if is_image {
+        ("multimodal", false)
+    } else if is_indexable_document(mime) {
+        ("my_files", true)
+    } else {
+        ("ace_upload", false)
+    }
+}
+
+/// Mime types ChatGPT can extract text from and index for retrieval (the `my_files` route).
+/// These are exactly the non-binary types `mime_for` can produce; all code extensions map to
+/// `text/plain`, so they are covered here too.
+fn is_indexable_document(mime: &str) -> bool {
+    matches!(
+        mime,
+        "text/plain"
+            | "text/markdown"
+            | "text/csv"
+            | "text/html"
+            | "text/javascript"
+            | "application/json"
+            | "application/xml"
+            | "application/pdf"
+            | "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            | "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            | "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+    )
 }
 
 fn asset_pointer(file_id: &str) -> String {
@@ -2561,6 +2597,20 @@ mod tests {
         assert_eq!(mime_for("noext"), "application/octet-stream");
     }
 
+    #[test]
+    fn upload_route_by_type() {
+        // Verified against chatgpt.com's own requests (see commit message): images are
+        // multimodal, text/documents index under my_files, binaries go to ace_upload.
+        assert_eq!(upload_route("image/png", true), ("multimodal", false));
+        assert_eq!(upload_route("text/plain", false), ("my_files", true));
+        assert_eq!(upload_route("application/pdf", false), ("my_files", true));
+        assert_eq!(upload_route(&mime_for("Main.smali"), false), ("my_files", true));
+        // The reported bug: a .so resolves to octet-stream and must use ace_upload, not my_files.
+        assert_eq!(upload_route(&mime_for("liba9c0.so"), false), ("ace_upload", false));
+        assert_eq!(upload_route("application/octet-stream", false), ("ace_upload", false));
+        assert_eq!(upload_route("application/zip", false), ("ace_upload", false));
+    }
+
     /// Hits chatgpt.com with the saved token: uploads a 5x5 red PNG and asks about it in a
     /// temporary chat. Run with `cargo test live_upload -- --ignored --nocapture`.
     #[tokio::test]
@@ -2583,6 +2633,27 @@ mod tests {
         let reply: String = events.iter().filter_map(|e| match e { StreamEvent::Text { delta, .. } => Some(delta.as_str()), _ => None }).collect();
         println!("reply: {reply}");
         assert!(!reply.is_empty());
+    }
+
+    /// Live: upload the real stripped ARM64 `.so` that failed in the app. A `.so` resolves to
+    /// `application/octet-stream`, so this exercises the `ace_upload` route added in `upload_route`;
+    /// before the fix it went through `my_files` with retrieval indexing and ChatGPT rejected it.
+    /// Run with `cargo test live_upload_so -- --ignored --nocapture`.
+    #[tokio::test]
+    #[ignore]
+    async fn live_upload_so() {
+        let token = crate::auth::load_token().expect("saved token");
+        let client = ChatGptClient::new(token);
+        let path = "E:/Project/Apk/reverse/truemoney/liba9c0.so";
+        let bytes = std::fs::read(path).unwrap_or_else(|e| panic!("read {path}: {e}"));
+        println!("read {} bytes from {path}", bytes.len());
+        let (use_case, index) = upload_route(&mime_for("liba9c0.so"), false);
+        println!("route: use_case={use_case}, index_for_retrieval={index}");
+        let file = client.upload_file("liba9c0.so", bytes).await.expect("upload .so");
+        println!("uploaded ok: {file:?}");
+        assert!(!file.is_image);
+        assert_eq!(file.mime_type, "application/octet-stream");
+        assert!(!file.id.is_empty(), "expected a file id");
     }
 
     /// Checks deltas arrive incrementally (temporary chat).
