@@ -81,6 +81,13 @@ function runningViewFor(convId) {
   if (view.convId === convId && view.running) return view;
   return [...parkedViews].find((v) => v.convId === convId) || null;
 }
+
+// Any chat replying right now — the one on screen or a backgrounded (parked) one. Drives the
+// "Thinking…"/"Ready" footer. The send button itself only ever reflects the chat on screen, so a
+// reply running in one chat never blocks sending in another (like chatgpt.com).
+function anyRunning() {
+  return view.running || [...parkedViews].some((v) => v.running);
+}
 const attachments = new Attachments($('att-tray'), (message) => {
   if (message) setStatus(message);
   updateSendState();
@@ -779,13 +786,15 @@ function updateSendState() {
     return;
   }
   const hasContent = !!chatInput.value.trim() || attachments.count() > 0 || mentions.count() > 0;
+  // This branch is only reached when the chat on screen is idle, so its send button never waits on
+  // another chat's reply: gate on this box's own content, not the global "a chat is replying" flag.
   // Like chatgpt.com: an empty box shows the blue Voice button; typing turns it into Send.
-  const showVoice = !hasContent && !sending;
+  const showVoice = !hasContent;
   sendBtn.hidden = showVoice;
   voiceBtn.hidden = !showVoice;
-  sendBtn.disabled = sending || attachments.busy() || !hasContent;
-  sendBtn.classList.toggle('busy', sending);
-  sendBtn.title = attachments.busy() ? 'Waiting for files to upload' : sending ? 'Another chat is still replying' : 'Send';
+  sendBtn.disabled = attachments.busy() || !hasContent;
+  sendBtn.classList.remove('busy');
+  sendBtn.title = attachments.busy() ? 'Waiting for files to upload' : 'Send';
 }
 
 // Stop the reply in the chat being viewed: the server is told (stop_conversation) and the
@@ -812,10 +821,13 @@ async function stopCurrent() {
   }
 }
 
+// `value` is only a hint: recompute from actual chat state, because with several chats able to
+// reply at once "sending" means "any chat is still replying", so one finishing must not flip the
+// footer to Ready while another is mid-reply. Callers set the view's `running` before calling.
 function setSending(value) {
-  sending = value;
+  sending = anyRunning();
   updateSendState();
-  setStatus(value ? 'Thinking…' : 'Ready');
+  setStatus(sending ? 'Thinking…' : 'Ready');
 }
 
 function setGoalMode(value) {
@@ -1092,7 +1104,7 @@ function learnThread(v, events) {
 
 async function sendText(text, files = [], display = [], systemHints = []) {
   text = text.trim();
-  if ((!text && !files.length) || sending) return;
+  if ((!text && !files.length) || view.running) return;
   // Goal mode isn't project-scoped yet, but it must still leave the project landing so its
   // reply is visible (not hidden behind the project view).
   if (goalMode && text) { exitProjectView(); return startGoal(text, files, display); }
@@ -1240,7 +1252,7 @@ function submitComposer() {
   sendText(text, files, display, hints);
 }
 
-window.chatApp = { sendText: (text) => sendText(text), canSend: () => !sending };
+window.chatApp = { sendText: (text) => sendText(text), canSend: () => !view.running };
 
 // ---------- Attaching files: "+" menu, paste, drag and drop ----------
 
@@ -1377,7 +1389,8 @@ const voiceCall = new VoiceCall(voiceUi, {
 
 voiceBtn.addEventListener('click', () => {
   if (voiceCall.active) { voiceCall.end(false); return; }
-  if (sending) return;
+  // Only the chat on screen matters; a reply running in a backgrounded chat doesn't block a call.
+  if (view.running) return;
   // From a project landing a call begins a fresh chat (and leaves the landing so the transcript
   // is visible), never continuing whatever chat was open before entering the project.
   if (mainEl.classList.contains('project-open')) startNewChat();
