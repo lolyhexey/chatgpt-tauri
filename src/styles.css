@@ -1338,7 +1338,6 @@ button { font: inherit; color: inherit; }
 }
 .send-btn:hover:not(:disabled) { background: rgb(55, 117, 214); }
 .send-btn:disabled { opacity: 0.4; cursor: default; }
-.send-btn.busy { opacity: 1; animation: busy 1.2s ease-in-out infinite; }
 @keyframes busy { 50% { opacity: 0.45; } }
 
 /* ---------- ChatGPT DIL components ---------- */

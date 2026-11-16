@@ -24,7 +24,6 @@ const searchBox = $('sb-search');
 const searchInput = $('sb-search-input');
 
 let currentConversationId = null;
-let sending = false;
 let goalMode = false;
 let temporaryMode = false;
 
@@ -82,11 +81,18 @@ function runningViewFor(convId) {
   return [...parkedViews].find((v) => v.convId === convId) || null;
 }
 
-// Any chat replying right now — the one on screen or a backgrounded (parked) one. Drives the
-// "Thinking…"/"Ready" footer. The send button itself only ever reflects the chat on screen, so a
-// reply running in one chat never blocks sending in another (like chatgpt.com).
-function anyRunning() {
-  return view.running || [...parkedViews].some((v) => v.running);
+// The composer talks to the chat on screen only, so a reply running in another chat never blocks
+// sending here (like chatgpt.com). The exception is a project landing: its composer starts a
+// brand-new chat, so the (hidden) chat behind it being busy must not turn Send into Stop.
+function onProjectLanding() {
+  return mainEl.classList.contains('project-open');
+}
+function viewBusy() {
+  return !onProjectLanding() && !!(view.running || view.remote);
+}
+// Footer label for the chat on screen.
+function idleStatus() {
+  return view.running ? 'Thinking…' : 'Ready';
 }
 const attachments = new Attachments($('att-tray'), (message) => {
   if (message) setStatus(message);
@@ -207,6 +213,8 @@ function exitProjectView() {
   currentProjectId = null;
   projects.setActive(null);
   chatInput.placeholder = 'Ask ChatGPT';
+  updateSendState(); // back to a chat that may be replying: Send turns into Stop again
+  setStatus(idleStatus());
 }
 
 // Switch the project landing between its Chats and Sources tabs.
@@ -242,6 +250,8 @@ async function openProject(id, name) {
   setTitle(currentProjectName);
   pvTitle.textContent = currentProjectName;
   chatInput.placeholder = `New chat in ${currentProjectName}`;
+  updateSendState(); // the landing composer starts a new chat: never Stop for the chat behind it
+  setStatus('Ready'); // nothing is replying on the landing itself
   pvChats.innerHTML = '';
   const loading = document.createElement('div');
   loading.className = 'sb-note';
@@ -771,7 +781,7 @@ function updateSendState() {
     return;
   }
   // While the chat you're looking at is replying, the send button is a Stop button (like the web).
-  const stoppable = !!(view && (view.running || view.remote));
+  const stoppable = !!view && viewBusy();
   const mode = stoppable ? 'stop' : 'send';
   if (sendBtn.dataset.mode !== mode) {
     sendBtn.dataset.mode = mode;
@@ -781,7 +791,6 @@ function updateSendState() {
     sendBtn.hidden = false;
     voiceBtn.hidden = true;
     sendBtn.disabled = !!view.stopping;
-    sendBtn.classList.remove('busy');
     sendBtn.title = 'Stop';
     return;
   }
@@ -793,7 +802,6 @@ function updateSendState() {
   sendBtn.hidden = showVoice;
   voiceBtn.hidden = !showVoice;
   sendBtn.disabled = attachments.busy() || !hasContent;
-  sendBtn.classList.remove('busy');
   sendBtn.title = attachments.busy() ? 'Waiting for files to upload' : 'Send';
 }
 
@@ -821,13 +829,12 @@ async function stopCurrent() {
   }
 }
 
-// `value` is only a hint: recompute from actual chat state, because with several chats able to
-// reply at once "sending" means "any chat is still replying", so one finishing must not flip the
-// footer to Ready while another is mid-reply. Callers set the view's `running` before calling.
-function setSending(value) {
-  sending = anyRunning();
+// A send started or ended in view `v` (callers set `v.running` first). The send button and the
+// footer follow the chat on screen only, so another chat finishing in the background must not
+// overwrite this chat's status.
+function syncBusy(v) {
   updateSendState();
-  setStatus(sending ? 'Thinking…' : 'Ready');
+  if (v === view) setStatus(idleStatus());
 }
 
 function setGoalMode(value) {
@@ -857,7 +864,7 @@ async function openConversation(id) {
   if (live) {
     showView(live);
     live.chat._scrollToBottom();
-    setStatus(sending ? 'Thinking…' : 'Ready');
+    setStatus(idleStatus());
     return;
   }
   // Already open (or still loading): just make sure it's current.
@@ -869,7 +876,7 @@ async function openConversation(id) {
   const cached = convCache.get(id);
   if (cached) {
     renderConv(v, cached);
-    setStatus(sending ? 'Thinking…' : 'Ready');
+    setStatus(idleStatus());
     refreshOpenChat(v);
     return;
   }
@@ -879,7 +886,7 @@ async function openConversation(id) {
     const conv = await invoke('get_conversation_cmd', { id });
     convCache.set(id, conv);
     renderConv(v, conv);
-    if (v === view) setStatus(sending ? 'Thinking…' : 'Ready');
+    if (v === view) setStatus(idleStatus());
     watchRemoteReply(v);
   } catch (e) {
     v.chat.clear();
@@ -991,7 +998,7 @@ async function watchRemoteReply(v) {
     sidebar.setBusy(v.convId, false);
     if (v === view) {
       updateSendState();
-      setStatus(sending ? 'Thinking…' : 'Ready');
+      setStatus(idleStatus());
     }
   }
 }
@@ -1058,7 +1065,7 @@ function startNewChat(opts) {
   if (!view.running && !view.convId && view.el.childElementCount === 0) {
     view.temporary = temp;
     updateHero();
-    if (wasProject) { setTitle(null); setStatus(sending ? 'Thinking…' : 'Ready'); }
+    if (wasProject) { setTitle(null); setStatus(idleStatus()); }
     chatInput.focus();
     return;
   }
@@ -1067,7 +1074,7 @@ function startNewChat(opts) {
   sidebar.setActive(null);
   setTitle(null);
   updateHero();
-  setStatus(sending ? 'Thinking…' : 'Ready');
+  setStatus(idleStatus());
   chatInput.focus();
 }
 
@@ -1104,25 +1111,27 @@ function learnThread(v, events) {
 
 async function sendText(text, files = [], display = [], systemHints = []) {
   text = text.trim();
-  if ((!text && !files.length) || view.running) return;
-  // Goal mode isn't project-scoped yet, but it must still leave the project landing so its
-  // reply is visible (not hidden behind the project view).
-  if (goalMode && text) { exitProjectView(); return startGoal(text, files, display); }
+  // The chat on screen is still replying (here or on another device): nothing to send into.
+  // viewBusy() ignores the chat behind a project landing, which this send leaves anyway.
+  if ((!text && !files.length) || viewBusy()) return;
 
   // Sending from a project landing starts a new chat inside that project (carries gizmo_id).
-  if (mainEl.classList.contains('project-open')) {
+  // Goal mode isn't project-scoped yet, but it too gets a fresh chat on screen, so it never runs
+  // on top of (or blocks on) whatever chat was open before the landing.
+  if (onProjectLanding()) {
     const gid = currentProjectId;
     const nv = makeView(null);
-    nv.gizmoId = gid;
+    nv.gizmoId = goalMode && text ? null : gid;
     showView(nv);
   }
+  if (goalMode && text) return startGoal(text, files, display);
 
   // Everything below uses this send's own view, so switching chats mid-reply is safe.
   const v = view;
   const vchat = v.chat;
   v.running = true;
   if (v.convId) sidebar.setBusy(v.convId, true);
-  setSending(true);
+  syncBusy(v);
   vchat.addUserMessage(text, display);
   vchat.startPending();
   const streamId = 's' + Date.now().toString(36) + Math.random().toString(36).slice(2);
@@ -1146,7 +1155,7 @@ async function sendText(text, files = [], display = [], systemHints = []) {
     handleAuthError(e);
   } finally {
     if (unlisten) unlisten();
-    setSending(false);
+    syncBusy(v);
   }
 }
 
@@ -1156,7 +1165,7 @@ async function startGoal(task, files = [], display = []) {
   const vchat = v.chat;
   v.running = true;
   if (v.convId) sidebar.setBusy(v.convId, true);
-  setSending(true);
+  syncBusy(v);
   vchat.addUserMessage(task, display);
   const notice = vchat.addNotice('Goal mode · round 1');
   vchat.startPending();
@@ -1204,7 +1213,7 @@ async function startGoal(task, files = [], display = []) {
     handleAuthError(e);
   } finally {
     unlisten.forEach((u) => u());
-    setSending(false);
+    syncBusy(v);
   }
 }
 
@@ -1232,11 +1241,15 @@ function submitComposer() {
   // Typing during a call is allowed (as on the web) but sending isn't supported yet.
   if (voiceActive) { notify('Sending text during a voice call isn’t supported yet', 'info'); return; }
   if (sendBtn.disabled) return;
+  // Enter while the chat on screen is replying (the button is Stop then): leave the box alone.
+  // Taking the text and files first would drop them, since sendText refuses to send.
+  if (viewBusy()) {
+    notify(view.remote && !view.running ? 'Wait for the reply on the other device to finish, or stop it' : 'Wait for the reply to finish, or stop it', 'info');
+    return;
+  }
   // The chat is still being fetched: sending now would reply to the wrong message and the
   // loaded history would then replace the new turn.
   if (view.el.querySelector('.thread-loading')) { notify('Wait for the chat to finish loading', 'info'); return; }
-  // Like the web: no new message while a reply is still being written on another device.
-  if (view.remote) { notify('Wait for the reply on the other device to finish, or stop it', 'info'); return; }
   if (attachments.hasErrors()) {
     notify('Remove the files that failed to upload first', 'info');
     return;
@@ -1252,7 +1265,7 @@ function submitComposer() {
   sendText(text, files, display, hints);
 }
 
-window.chatApp = { sendText: (text) => sendText(text), canSend: () => !view.running };
+window.chatApp = { sendText: (text) => sendText(text), canSend: () => !viewBusy() };
 
 // ---------- Attaching files: "+" menu, paste, drag and drop ----------
 
@@ -1390,10 +1403,10 @@ const voiceCall = new VoiceCall(voiceUi, {
 voiceBtn.addEventListener('click', () => {
   if (voiceCall.active) { voiceCall.end(false); return; }
   // Only the chat on screen matters; a reply running in a backgrounded chat doesn't block a call.
-  if (view.running) return;
+  if (viewBusy()) return;
   // From a project landing a call begins a fresh chat (and leaves the landing so the transcript
   // is visible), never continuing whatever chat was open before entering the project.
-  if (mainEl.classList.contains('project-open')) startNewChat();
+  if (onProjectLanding()) startNewChat();
   // Like chatgpt.com: from an open chat the call continues it (the transcript is added after
   // its messages); otherwise it starts a new chat. A chat that is still replying can't be
   // continued, so that case starts a new one too.
@@ -1484,7 +1497,7 @@ chatInput.addEventListener('keydown', (e) => {
 });
 chatInput.addEventListener('input', () => { autosize(); updateSendState(); mentions.onInput(); });
 chatInput.addEventListener('click', () => mentions.onInput());
-sendBtn.addEventListener('click', () => { if (view.running || view.remote) stopCurrent(); else submitComposer(); });
+sendBtn.addEventListener('click', () => { if (viewBusy()) stopCurrent(); else submitComposer(); });
 $('goal-chip-close').addEventListener('click', () => { setGoalMode(false); chatInput.focus(); });
 $('goal-nav-btn').addEventListener('click', () => { setGoalMode(true); chatInput.focus(); });
 
