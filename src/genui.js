@@ -504,7 +504,10 @@ function transformGenUI(text) {
   text = text.replace(/\{#(?:if|each)\b[^}]*\}|\{\/(?:if|each)\}|\{:else\}|\{#else\}/g, '');
 
   if (Object.keys(state).length) {
-    text = '<span class="gx-state" hidden data-init="' + escAttr(JSON.stringify(state)) + '"></span>\n\n' + text;
+    // Own paragraph: this segment may start right after a code fence's closing ```, and anything
+    // glued to that line stops marked from seeing the fence as closed (the rest of the reply
+    // would then render as one giant code block).
+    text = '\n\n<span class="gx-state" hidden data-init="' + escAttr(JSON.stringify(state)) + '"></span>\n\n' + text;
   }
   return text;
 }
