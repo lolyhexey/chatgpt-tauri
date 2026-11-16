@@ -10,7 +10,7 @@ reuses the access token the ChatGPT CLI stores at `~/.chatgpt-cli/token`.
 - **Stack:** Rust 2024 edition · Tauri 2 · reqwest + tokio · WebView2 (Windows) · plain HTML/CSS/JS
 - **Platform:** developed and verified on Windows 11 (the release build hides the console via `windows_subsystem = "windows"`). Tauri is cross-platform, but only Windows has been exercised.
 - **Not an Android project.** This is a desktop app; there is no Gradle, no APK, no emulator.
-- **Design source of truth:** `docs/superpowers/specs/2026-11-07-chatgpt-tauri-design.md` and the Node.js reference client at `E:\Project\Nodejs\Chatgpt`.
+- **Reference:** the Node.js reference client at `E:\Project\Nodejs\Chatgpt`.
 
 ---
 
@@ -249,11 +249,7 @@ so the debug port is closed.
 ```
 Chatgpt/
 ├─ README.md               ← this file
-├─ CLAUDE.md               ← short, auto-loaded brief for Claude Code
-├─ .gitignore              ← /target, .superpowers/, node_modules/
-├─ docs/superpowers/
-│  ├─ specs/2026-11-07-chatgpt-tauri-design.md   ← the design (source of truth)
-│  └─ plans/2026-11-07-chatgpt-tauri.md          ← the implementation plan
+├─ .gitignore              ← /target, node_modules/, local-only notes
 ├─ src/                    ← frontend (vanilla JS + CSS + vendored libs)
 │  ├─ index.html  app.js  chat.js  markdown.js  genui.js  voice.js
 │  ├─ mentions.js  attachments.js  viewer.js  sidebar.js  picker.js  icons.js

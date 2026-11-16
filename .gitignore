@@ -2,3 +2,7 @@
 **/target/
 .superpowers/
 node_modules/
+
+# local-only: not published
+CLAUDE.md
+docs/superpowers/
