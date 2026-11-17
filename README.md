@@ -43,6 +43,16 @@ reuses the access token the ChatGPT CLI stores at `~/.chatgpt-cli/token`.
 - WebView2 runtime (ships with Windows 11).
 - A valid ChatGPT access token at `~/.chatgpt-cli/token` (same file the Node CLI uses). The app can also save one you paste into its login overlay.
 
+### Getting your access token
+The app does not log in with a password; it uses the access token of your own ChatGPT session.
+1. Sign in at <https://chatgpt.com> in your browser.
+2. In the same browser, open <https://chatgpt.com/api/auth/session>.
+3. Copy the value of `accessToken` (a long string starting with `eyJ`, without the quotes).
+4. Paste it into the app's login overlay, or save it as the only content of `~/.chatgpt-cli/token`.
+
+The token expires after a while. When the app reports `401` / "session expired", repeat the steps above.
+Treat it like a password: anyone holding it can use your account, so never commit, share, or paste it into an issue.
+
 ### Run in development (hot reload of the webview)
 ```bash
 cd src-tauri
